@@ -12,6 +12,7 @@ Read `./flowagent-components.md` (capabilities/branches/connection rules for 14+
 - **Connect every meaningful branch**: knowledge search `no result`, Condition `else`, Classifier `other`, every `exception branch`.
 - **Give every Classifier category a non-empty branch rule** (and every Condition a non-empty condition): the canvas rejects an empty rule with "Cannot be empty" and the node becomes unusable.
 - Exactly one `Input` and one `Output`; `Output`/`Human Service` are terminal (no downstream).
+- **Human Service nodes**: write `humanConfig` at the **component level** (not only bot-entity level), or the node config renders blank — see `./flowagent-components.md` → Human Service.
 - `{{...}}` can only reference **upstream**; after replacement-type nodes (cards / LLM output), explicitly re-inject the original input with `{{start_msg_text}}` etc.
 - Use If/Else (free) where appropriate; do not misuse Condition (consumes LLM).
 

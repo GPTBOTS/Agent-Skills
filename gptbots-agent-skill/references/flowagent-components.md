@@ -220,6 +220,8 @@ Hand off to a human — hand the conversation to a **third-party human customer-
 
 The vendor is set in the top-level `humanConfig.manufacturer`. Its value **MUST be a `HumanManufacturerEnum` value, not a display name** — one of: `Intercom`, `Webhook`, `LiveChat`, `SoBot`, `ZohoSalesIQ`, `LiveDesk`, `Omnichat` (`Omnichat` = the Crescendo Lab vendor). A display name such as `"livechat"`, `"Livedesk"`, `"Zoho Sales IQ"` or `"Crescendo Lab"` will fail import with `Invalid import file: value "..." is not allowed for field "manufacturer"`. `humanConfig.status` is `enable` / `disable`.
 
+⚠️ **Also write `humanConfig` at the component level** (on the `Human` component itself), not only at the bot-entity level. The transfer-to-human config form renders from the component-level `humanConfig`; if it is missing the node's config shows up blank. The backend backfills entity→component on import, but the generator should set it directly on the component.
+
 **Output:** no successor node; after the human handoff the flow ends here (terminal node).
 
 ## Conversational Collection

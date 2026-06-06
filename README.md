@@ -1,8 +1,8 @@
 # GPTBots Agent Skill
 
-The GPTBots Agent Skill helps you create and optimize GPTBots Agents and Workflows, and drive
-published ones via the public API. This repo holds the skill (`gptbots-agent-skill/`) plus
-`skillpack`, a small tool to validate, package, and publish it.
+The GPTBots Agent Skill helps you create, read, update, and optimize
+[GPTBots](https://www.gptbots.ai) Agent and Workflow configurations (`.bot` / `.flow` files),
+and drive published Agents and Workflows via the GPTBots Open API.
 
 ## Install the skill
 
@@ -15,13 +15,29 @@ npx skills add https://github.com/GPTBOTS/Agent-Skills/tree/main/gptbots-agent-s
 npx skills add GPTBOTS/Agent-Skills --skill gptbots-agent-skill
 ```
 
-### Anthropic-only channels
+This reads the skill straight from the source folder.
 
-- **Claude app / Cowork** — share `gptbots-agent-skill.skill` (built by `skillpack package`); it shows
-  a one-click "Save skill" button.
+### Anthropic channels
+
+For Claude's own channels, use the packaged build attached to the
+[latest release](https://github.com/GPTBOTS/Agent-Skills/releases/latest), or build it locally with
+`skillpack package`.
+
+- **Claude app / Cowork** — share
+  [`gptbots-agent-skill.skill`](https://github.com/GPTBOTS/Agent-Skills/releases/latest/download/gptbots-agent-skill.skill);
+  it shows a one-click "Save skill" button.
 - **claude.ai web** — Settings → Capabilities → Skills → upload the same file (rename `.skill` to `.zip`
   if the form requires it).
-- **Anthropic Skills API** — upload `gptbots-agent-skill.api.zip` (SKILL.md at the archive root).
+- **Anthropic Skills API** — upload
+  [`gptbots-agent-skill.api.zip`](https://github.com/GPTBOTS/Agent-Skills/releases/latest/download/gptbots-agent-skill.api.zip)
+  (SKILL.md at the archive root).
+
+## What's inside
+
+- [`gptbots-agent-skill/SKILL.md`](gptbots-agent-skill/SKILL.md) — the skill entry point
+- [`gptbots-agent-skill/references/`](gptbots-agent-skill/references/) — detailed guides for Agents,
+  Workflows, FlowAgent components, the Open API, variables, and material mapping
+- [`gptbots-agent-skill/scripts/`](gptbots-agent-skill/scripts/) — a config validation helper
 
 ## Maintain the skill (skillpack)
 

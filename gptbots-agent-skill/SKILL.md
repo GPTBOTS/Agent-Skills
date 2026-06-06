@@ -3,7 +3,7 @@ name: gptbots-agent-skill
 description: Create, read, update, and optimize GPTBots (https://www.gptbots.ai) Agent and Workflow configurations (.bot / .flow files), and drive published Agents/Workflows via the GPTBots Open API. Use this skill whenever the user mentions GPTBots, provides or references a .bot or .flow file, wants to build/optimize a chatbot Agent, FlowAgent, or Workflow for the GPTBots platform, or wants API-based evaluation, quality assessment, RAG testing, scheduled triggering, or knowledge-base/data management — even if they just say "optimize my bot config" with an attached .bot/.flow file.
 license: MIT
 metadata:
-  version: 1.2.0
+  version: 1.3.2
   generatedBy: gptbots-agent-skill
 ---
 
@@ -51,6 +51,15 @@ Follow the reference matching the target type, then quality-check and deliver:
 
 ### C. Drive a published Agent/Workflow via the API
 For evaluation / quality assessment / RAG testing / scheduled triggering / data & knowledge-base management, follow `references/call-gptbots-api.md` (public Open API only).
+
+## Prompt quality for LLM-capable nodes (critical)
+
+Several nodes carry an LLM prompt: the top-level identity `prompt` of a QuestionAnswer/MultiAgent agent, FlowAgent `LLM` components, the Classifier (`Branch`) — **which is LLM-driven: every category rule is a prompt the LLM executes to route each message** — and `Condition` components (also LLM-judged), `ChatGather` (LLM-driven collection: its prompt's field definitions + SOP drive both asking and extraction, and it monopolizes the conversation while collecting — see the FlowAgent reference), and Workflow `LLM` / `INTENT` nodes. These prompts — the identity (system) prompt above all — determine the Agent's runtime quality and efficiency more than any other field, so invest more effort here than anywhere else in the config:
+
+- **Clear, concise, executable.** State the role/identity, goal, boundaries, and expected output format in short imperative sentences. Every sentence should change model behavior; cut filler and vague adjectives — verbose prompts cost tokens on every turn and dilute the instructions that matter.
+- **One node, one job.** Scope each prompt to that node's single responsibility; don't restate global rules in every node — put shared identity/boundaries once in the identity prompt.
+- **Classifier branch rules are prompts too.** Each `Branch` category rule and `INTENT` intent description deserves the same care as a system prompt: the rules must be **mutually exclusive and unambiguous**, written as concrete descriptions of what belongs in that category (add examples for easily-confused intents), with everything else falling to the `Other`/fallback branch. Routing accuracy — and therefore the whole flow's quality — is capped by the weakest branch rule.
+- **No conflicts.** Before delivery, re-read all prompts in the config **as a set** (identity prompt + every LLM/classifier/condition prompt) and resolve any contradiction in goals, tone, boundaries, or output format. Conflicting prompts make the model behave inconsistently at runtime, which no amount of flow design can fix.
 
 ## Quality check (mandatory — never deliver a config that fails)
 After producing or editing any `.bot`/`.flow`, run:

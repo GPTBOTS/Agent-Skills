@@ -21,6 +21,7 @@ Use `Authorization: Bearer <API_KEY>` against the regional base URL `https://api
 - Top level: `formatVersion`, `exportType=WORKFLOW`, `exportTime`, `name`, `botType=Workflow`, `workflow.workflowNodes[]`, `workflow.workflowEdges[]`.
 - Leave model id blank (backend backfills); leave cross-organization references and authentication blank (cleared on import).
 - A `NODE` reference in a node's `inputs[]` looks like `nodeId#name#id`, and the referenced node must be upstream.
+- **Prompts decide runtime quality**: every `LLM` node's system prompt and every `INTENT` node's intent description is executed by an LLM on each run. Write them clear, concise, and precisely executable; scope each to its node's single job; and check all prompts in the workflow as a set for conflicts before delivery (see *Prompt quality for LLM-capable nodes* in SKILL.md).
 - **Always (re)generate a mermaid flow diagram of the design** and write it into a `## Flow (mermaid)` section of an `overview.md` delivered next to the output file, so the design intent is reviewable.
 
 ### 5. Quality check (mandatory)

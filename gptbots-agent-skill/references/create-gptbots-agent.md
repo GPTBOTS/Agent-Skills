@@ -21,6 +21,7 @@ Start from the user's existing `.bot` (or a minimal valid skeleton when creating
 - Model id (`chatModelVersionId`, etc.) **left blank or as a placeholder** — the backend import backfills the default model; inventing real ids will cause errors.
 - Plugin authentication, `apiSecrets`, cross-organization references **left blank** — import always clears them.
 - `creativityLevel ∈ [0,0.95)`; `MultiAgent` requires a valid planner node.
+- **The identity `prompt` is the highest-leverage field in the whole config** — it drives the Agent's runtime quality and efficiency. Write it with extra care: clear role/goal/boundaries/output format in short imperative sentences, no filler, no internal contradictions (see *Prompt quality for LLM-capable nodes* in SKILL.md).
 
 ### 4. Quality check (mandatory; do not deliver if it fails)
 After writing the `.bot` you **must** run:

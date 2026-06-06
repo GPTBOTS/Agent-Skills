@@ -1,0 +1,21 @@
+[skill]
+path = "gptbots-agent-skill"
+
+[git]
+remote = "origin"
+branch = "main"
+
+[limits]
+max_total_size_mb      = 30
+max_file_count         = 1000
+max_file_size_mb       = 10
+max_skill_md_bytes     = 65536
+max_name_length        = 64
+max_description_length = 1024
+
+[package]
+emit_skill   = true
+emit_api_zip = true
+
+[exclude]
+patterns = [".git/", ".DS_Store", "__pycache__/", "*.pyc", "metadata.json"]

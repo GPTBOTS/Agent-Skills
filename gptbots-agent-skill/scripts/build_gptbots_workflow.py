@@ -39,6 +39,12 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Convenience re-export: keep long prompts in an external prompts.md / .json.
+try:
+    from gptbots_prompts import load_prompts, load_prompt_store  # noqa: F401
+except ImportError:
+    load_prompts = load_prompt_store = None
+
 
 class WorkflowBuilder:
     def __init__(self, name):
@@ -89,18 +95,20 @@ class WorkflowBuilder:
                 continue
             depth[nid] = d
             frontier.extend((m, d + 1) for m in adj.get(nid, []))
+        # Generous pitch so wide/tall platform node cards don't overlap on import.
+        COL_W, ROW_H = 640, 460
         rows = {}
         for n in self.nodes:
             d = depth.get(n["id"], 0)
             if n.get("x") is None or n.get("y") is None:
                 r = rows.get(d, 0)
                 rows[d] = r + 1
-                n["x"], n["y"] = 440 * d, 220 * r
+                n["x"], n["y"] = COL_W * d, ROW_H * r
 
     def build(self):
         self._auto_layout()
         return {"formatVersion": "1.0", "exportType": "WORKFLOW",
-                "exportTime": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "exportTime": int(datetime.now(timezone.utc).timestamp() * 1000),  # epoch ms (Long) — ISO strings are rejected on import
                 "name": self.name, "botType": "Workflow",
                 "workflow": {"workflowNodes": self.nodes, "workflowEdges": self.edges}}
 

@@ -112,7 +112,7 @@ A built-in LLM that routes upstream messages into named branches by branch rules
 - Each category = name + **branch rule** (natural language, supports `{{}}`); anything matching no rule goes to `Other`.
 - **Run mode**: `Extract` (each branch only receives the part matching its own rule, `Other` receives the full message) / `Pass-through` (each matched branch receives the full upstream message).
 
-⚠️ **Every category's branch rule must be non-empty.** The canvas rejects an empty rule with **"Cannot be empty"** and the classifier becomes unusable, so write an explicit decision description for each category — never leave it blank. `Other` is the only branch that carries no rule.
+⚠️ **Every category's branch rule must be non-empty.** The canvas rejects an empty rule with **"Cannot be empty"** and the classifier becomes unusable, so write an explicit decision description for each category — never leave it blank. `Other` is **system-preset**: it is not a category you create (it carries no rule and is not counted among your `branch_1/branch_2/…`); it always exists as the fallback. You only optionally wire its `branch_other` edge to choose where unmatched messages go.
 
 **Output (multi-branch, multiple can be activated at once):**
 - One branch per category: taken on a hit; the content carried is determined by the run mode (extract = matched part / pass-through = full message).
@@ -124,7 +124,9 @@ The LLM evaluates one natural-language condition you write → if it holds, take
 
 **LLM core:** same as the LLM node (identity prompt/knowledge data/user question/multimodal/exception mechanism); memory **has no long-term memory** (only short-term memory/user attributes/key events).
 
-**Condition config:** the condition is written in the "Condition setting → If" box (supports `{{}}`); `Else` is an automatic fallback. ⚠️ The `If` condition text **must be non-empty** (an empty condition is rejected with "Cannot be empty"); `Else` needs no text.
+**Condition config:** the condition is written in the "Condition setting → If" box (supports `{{}}`); `Else` is an automatic fallback. ⚠️ The `If` condition text **must be non-empty** (an empty condition is rejected with "Cannot be empty"); `Else` needs no text. **In the JSON the IF text lives on the `conditions_true` edge's `condition` field, with the edge `name:"_true"`; the `conditions_false` edge is `name:"_false"` with `condition:""`.** Putting the IF text only in a node message leaves the canvas IF box empty. Use the builder's `condition_edges(cond, if_text, true_dst, false_dst)`; the validator flags an empty IF (`CONDITION_IF_EMPTY`) and wrong edge names (`CONDITION_EDGE_NAME`).
+
+> **Root cause of a greyed/unusable IF port** (from real-export comparison): the `conditions_true` edge's `name` was `null` (it MUST be `"_true"`), often together with leftover duplicate exception edges (e.g. two `name:"Exception"` plus a `name:"_exception"` on the same `conditions_exception` port from an old import round-trip). Filling the IF box in the UI only sets `condition` — it can't set the edge `name`, so the port stays grey. The fix is at the JSON level: `name:"_true"` on the true edge and exactly one edge per output handle. The validator now errors on a repeated `sourceHandle` (`EDGE_DUP_HANDLE`).
 
 **Output (all pass through the full upstream input):**
 - `If`: taken when the condition holds.
@@ -175,7 +177,7 @@ Retrieves from the knowledge base: **passes the original upstream input through 
 ## Variable Assignment
 Assigns values to **user attributes or custom variables**, **deterministically** (more stable than the LLM's "user attribute" self-update). After assignment, downstream references to the variable get the latest value.
 
-**Prerequisite:** at least one **user attribute or custom variable** must be defined first; otherwise there is no assignable target, the node can't be configured, and it **can't connect downstream**.
+**Prerequisite (critical for imports):** at least one **user attribute or custom variable** must already exist in the workspace; otherwise there is no assignable target, the node can't be configured, and it **can't connect downstream**. **Importing a `.bot` does NOT auto-create these variables** — so a Variable node whose targets aren't pre-defined shows "No variables available" and its `variableSetValueConfigs` are silently dropped. For the common "collect fields → act" pattern you usually **don't need a Variable node at all**: route the ChatGather's collect-complete edge straight to the next step (e.g. human handoff); the collected fields + conversation context carry forward, and key events capture the business type/status. Only use Variable assignment when the target attributes are pre-defined in the workspace.
 
 **Config:** you can add **multiple assignments**, each independent; each = target variable + operation + value.
 - Operations: `Overwrite` (replace the original value) / `Append` (**`list` type only**, add an item to the end) / `Clear`.
@@ -211,7 +213,7 @@ Passes **a preconfigured piece of content** (a structured object) directly to th
 ## Message Pass-through
 **Sends a message directly** to the user at any point in the flow, displayed immediately without having to reach End. As for the data flow, it is a **pass-through**: the upstream input is passed verbatim to downstream, unaffected by this message.
 
-**Message content:** a piece of text, supports `{{}}`, ≤2000 characters.
+**Message content:** a piece of text, supports `{{}}`, ≤2000 characters. ⚠️ **In the JSON, `content` MUST be a JSON STRING keyed by `contentType`** — e.g. `contentType:"Text"` → `content:"{\"Text\":\"...the text...\"}"`. A plain text string (not JSON-encoded) fails to parse and the message renders **empty**. Use the builder's `message_content(text, content_type)` (or just pass `content="plain text"` to `add("Message", ...)` — the builder auto-encodes it); the validator flags a non-JSON content as `MSG_CONTENT_NOT_JSON`.
 
 **Output:** passes the upstream input through to downstream (the message is only sent to the user; downstream does not receive it); it **may also have no downstream**.
 
@@ -229,7 +231,7 @@ A built-in LLM that proactively asks the user through **multiple turns of conver
 
 **LLM core:** same as the LLM node (identity prompt / multimodal / exception mechanism); memory includes long-term memory / short-term memory / user attributes / key events.
 
-**Collection fields:** you can add multiple, each = source (`Custom`) + field name + type (`String` / `Number` / `Integer` / `Boolean` / `datetime`) + description (supports `{{}}`).
+**Collection fields:** you can add multiple, each = source (`Custom`) + field name + type (`String` / `Number` / `Integer` / `Boolean` / `datetime`) + description (supports `{{}}`). ⚠️ **In the JSON the field name MUST be `fieldName` (with `showName` as the display label), and `optionFieldType` is required (`null` for free text).** The keys `name` / `variableName` / `key` are silently dropped on import, after which the platform assigns random default names (age / user_birthday / …). `fieldName` becomes a variable key, so it must contain only **lowercase letters, digits, and underscores (`[a-z0-9_]`)**. Use the builder's `gather_fields()` which emits the correct shape; the validator flags a missing `fieldName` as `GATHER_FIELD_NAME` and a bad charset as `GATHER_FIELD_NAME_FORMAT`.
 
 **Collection control:** automatically ends after more than N turns of conversation; the whole thing ends if the node runs longer than N minutes.
 
@@ -288,13 +290,30 @@ Reference with `{{...}}` in fields, **only variables upstream on the path**. In 
 **Common to every component:** `type` (FlowComponentType), `id` (unique integer), `name`, `title`,
 `x`, `y` (canvas coordinates — see Connections & handles), `nextComponents[]` (outgoing edges).
 
+### PromptMessage object shape (LLM-capable nodes) — `text`, never `content`
+
+Every entry of a node's `messages[]` (and `datasetMessages[]`) is exactly:
+```json
+{"lineId": null, "type": "Role", "text": "…the prompt…", "ids": [], "upstream": null, "children": null, "datasetType": null}
+```
+The prompt text lives in **`text`**. ⚠️ A `content` key here is the **wrong field** (that's the
+reply field of `Message`/`Predefine` nodes) — on import the prompt **deserializes BLANK** and the
+node silently runs with no instructions. The standard array is, in order:
+`[Role, LongMemory, ShortMemory, Plugin, Input]` — plus a `Condition` entry (the If-text) right
+before `Input` on `Condition` nodes. `LongMemory`/`ShortMemory`/`Plugin` are present with empty
+`text`. The trailing **`Input`** message's `upstream` = the id of the node feeding this one, with a
+display label `"name(title)"`. Knowledge retrieval is NOT a message — set `dataEnable: true` and
+`datasetMessages: [{… type:"Content" …}]` on the consuming LLM (the builder's `reads_kb=True`).
+The builder assembles all of this automatically; the validator flags `content`-keyed prompts as
+`MSG_CONTENT_FIELD` and an empty Role as `MSG_ROLE_EMPTY`.
+
 | `type` | Key fields it uses (beyond the common ones) | Outputs |
 |---|---|---|
 | `Input` | — (flow entry) | single |
 | `Output` | — (flow endpoint) | none (terminal) |
 | `LLM` | `chatModelVersionId` (leave blank → backfilled), `messages[]` (PromptMessage), `maxRespTokens`, `responseFormat`, `memoryEnable`/`longTermMemory`/`shortTermMemory`/`userPropertyEnable`, `toolsEnable`/`databaseEnable`, `reasoningEffort`/`showReasoning`/`reasoningEnabled`, `multiResponseTypes[]`, `multiModalLlmInput`, `exceptionSwitch` | `success` (+ `_exception` if `exceptionSwitch`) |
-| `Branch` (Classifier) | `messages[]` (LLM core), branches carried by `nextComponents[]` (each with `name`/`condition`), `exceptionSwitch` | one per branch + `other` (+ `_exception`) |
-| `Condition` | `messages[]` (LLM core), `exceptionSwitch` | `true` / `false` (+ `_exception`) |
+| `Branch` (Classifier) | `messages[]` = `[Role, ShortMemory, Input]` only (no LongMemory/Plugin — the classifier has no long-term memory; the prompt does NOT hold the per-category rules), `branchRunMode` (`EXTRACT`/pass-through), branches carried by `nextComponents[]` (each edge: `name` = category label, `condition` = the **routing-rule text**), `exceptionSwitch` | one per branch + the built-in Other (`name:"_other"`, `condition:""`). **No `branch_exception` edge** — the classifier's exception is the preset `exceptionSwitch` row, never a wired edge. |
+| `Condition` | `messages[]` (LLM core), `exceptionSwitch` | `true` / `false` (+ `_exception`). IF text on the `conditions_true` edge's `condition` (`name:"_true"`); `conditions_false` is `name:"_false"`, `condition:""`. |
 | `Bool` (If/Else) | `regularGroups[]` (no LLM) | `true` / `false` / `other` |
 | `Dataset` (Knowledge) | `docCorrelation` (0–1), `matchDataLimit` (1–50), `embeddingRate`, `rerankSwitch`/`rerankModelVersionId`, `dataSourceShowType`, `customKnowledgeType`, `docGroupIds` (real ids or empty), `metadataFilter` | `true` (found) / `false` (no result) |
 | `Variable` | `variableSetValueConfigs[]` | `true` / `exception` |
@@ -325,16 +344,32 @@ Component-nested:
 - `gatherFields[].valueType`: `string` `bool` `integer` `number` `datetime` `list`
 - `gatherFields[].optionFieldType` (FormGather): `string` `multiString` `bool` `integer` `number` `datetime` `phoneNumber` `email` `radio` `checkbox`
 - `gatherControl.formGatherType` (FormGather): `single` `all`
-- `variableSetValueConfigs[].variableType`: `USER_PROPERTY` `CUSTOM_VARIABLE`
-- `variableSetValueConfigs[].variableOperateType`: `CLEAR` `COVER` `APPEND`
+- `variableSetValueConfigs[]` real shape: `{variableName, operation, value}` — `operation` is `Cover` `Clear` `Append` (**capitalized**, not `COVER`/`CLEAR`/`APPEND`). `value` may embed `{{...}}`. (The legacy `variableType`/`variableOperateType` fields are not in the real export.)
 - `regularGroups[].combine`: `and` `or`
 - `regularGroups[].items[].category`: `GlobalVariable` `UserProperty` `BrowserProperty` `Upstream` `WhatsApp` `Telegram` `LiveChat` `LiveDesk` `Line` `Start` `CustomVariable` `KeyEvent`
 - `regularGroups[].items[].type`: `string` `number` `datetime` `bool` `list`
 - `multiModalLlmInput.fileMode`: `SYSTEM` `LLM` `DISABLED`
 - `humanConfig.manufacturer` / `humanConfig.status`: see the Human Service section above.
 
+> ⚠️ **Top-level `multiModal` is mandatory in every delivered `.bot`** (auto-save NPE guard):
+> the import copies `multiModal` verbatim with **no default backfill**, while the console
+> auto-save dereferences `multiModalForm.multiModalInput.chatMode` **without a null check**
+> (backend regression 2025-12-02). A `.bot` imported without it imports fine but then returns
+> HTTP 500 on **every** auto-save — the bot is uneditable. Normally-created bots get defaults
+> at creation and never hit this; only imported bots do. Minimal safe shape:
+> `"multiModal": {"multiModalInput": {}}` — an empty object gives a non-null VO whose null
+> `chatMode` is safe downstream (only ever compared against `INTERRUPT`). The builder emits
+> this automatically; the validator flags its absence as `L0_MULTIMODAL_AUTOSAVE_NPE`.
+>
 > ⚠️ Do **not** set `multiModal` input/output `audioMode`/`chatMode`/`imageMode` from guesswork —
-> the same key uses different enums on input vs output. Copy them from a real exported `.bot`.
+> the same key uses different enums on input vs output. Copy them from a real exported `.bot`;
+> omitting them (null) is always safe.
+>
+> ⚠️ **Duplicate exception edges are a known import artifact**: platform round-trips have been
+> observed duplicating a Condition's exception exit (an old `Exception` entry with
+> `condition=null` + a new `_exception` entry, same id/sourceHandle). The engine tolerates it
+> (nextComponents is pass-through) but it's dirty data — the validator warns as `EDGE_DUP_LINE`;
+> remove the duplicates before re-delivery.
 
 ---
 
@@ -342,6 +377,26 @@ Component-nested:
 
 Each edge lives in the **source** component's `nextComponents[]` as:
 `{ id, nextComponentId, sourceHandle, targetHandle, condition, sort, name }`.
+
+**Strong-typed Integer fields — wrong type is import-fatal:** the backend deserializes with strict
+Jackson typing (`BotFlowComponent.id` is Integer; `BotFlowNext.id/nextComponentId/sort` are
+Integer; `x`/`y` are Integer), and the global ObjectMapper has `FAIL_ON_UNKNOWN_PROPERTIES=false`
+— so EXTRA fields never fail an import, only wrong TYPES do, always with the signature error
+`value X is not allowed for field "…"` (same as `exportTime`).
+
+| Field | Type | Trap |
+|---|---|---|
+| `components[].id` | bare int | `"1"` (quoted) or `vueflow__node-...` string → rejected |
+| `components[].x` / `y` | bare int | quoted numbers / floats |
+| `nextComponents[].id` | bare int | `"e1"`, `vueflow__edge-...` (the frontend canvas is VueFlow, but the backend type is still Integer) |
+| `nextComponents[].nextComponentId` | bare int | must equal an existing component `id` |
+| `nextComponents[].sort` | bare int | **set it equal to the edge `id`** (globally unique) |
+
+Use unique edge ids that don't collide with component ids, e.g. `100001, 100002, …` (100000+seq). ⚠️ **`sort` must be globally unique too — set `sort == id`.** A per-node counter (1, 2, … restarting at each node) makes edges across the bot share sort values; that collision makes the canvas mis-render and shows branch **target nodes as greyed/unusable**. The validator flags duplicate sorts as `EDGE_SORT_DUP`.
+The builder's `connect()` generates these automatically; the validator flags violations as
+`EDGE_ID_NOT_LONG` / `EDGE_INT_FIELD` / `FLOW_COMP_ID_NOT_INT` / `FLOW_COMP_XY_NOT_INT` /
+`EDGE_ID_DUP`. **Before delivery, recursively scan the JSON: any quoted number or string in an
+`id`/`nextComponentId`/`sort`/`x`/`y` position must become a bare integer.**
 
 **Routing vs rendering — what each field is for:** the runtime routes **only** by `nextComponentId` (the engine does not read the handles), so a wrong `sourceHandle`/`targetHandle` does **not** misroute execution. Handles are purely the **canvas** port anchors: when a handle id can't be resolved to a rendered port, the edge endpoint falls back to the node origin and the line draws distorted/misrouted. That visual breakage is why the validator still flags every handle mismatch as an error — a flow that looks broken on the canvas is not deliverable. `targetHandle` is fully deterministic (target id + target type, no suffix); only `sourceHandle` carries an output suffix (below).
 
@@ -379,25 +434,26 @@ handle can't be resolved and the edge falls back to the node origin):**
 
 **Output suffixes on `sourceHandle`** (single-output types — LLM/Message/Predefine/ToolApi/Workflow
 — carry no suffix on the success path):
-- Branch: `branch_<branchId>` per branch + `branch_other`; `condition` carries the branch id (empty for `other`).
+- Branch: `branch_1` / `branch_2` / … (**sequential per classifier**) per category + `branch_other`; the edge's `condition` carries the **routing-rule text** (a natural-language string), NOT an id. ⚠️ **The built-in Other edge MUST be `name:"_other"` + `condition:""`** (an empty string, NOT null/omitted) so the platform maps it to the bottom built-in Other. Using `name:null` backfires — the platform renders branch_other as an editable BLANK category, and deleting it loses the Other route. Every classifier needs exactly one branch_other edge. **There is no `branch_exception` edge** — the classifier's exception is the system-preset `exceptionSwitch` row (set `exceptionSwitch=true`; do not wire an exception edge), and the validator flags `branch_exception` as `BRANCH_EXCEPTION_EDGE`. The validator also flags a wrong/absent Other (`BRANCH_OTHER_NAME` / `BRANCH_NO_OTHER`) and a numeric id in `condition` (`BRANCH_RULE_IS_ID`).
 - Bool: `boolean_true` / `boolean_false` / `boolean_other`.
-- Condition: `conditions_true` / `conditions_false`.
+- Condition: `conditions_true` (edge `name:"_true"`, `condition` = the IF text) / `conditions_false` (edge `name:"_false"`, `condition:""`).
 - Dataset: `knowledge_true` (found) / `knowledge_false` (no result).
 - Regular: `regular_<groupId>_true` / `regular_<groupId>_false`; `condition` carries the group id.
 - ChatGather: `qa-collect_true` / `qa-collect_false`.
 - FormGather: `formgather_true` / `formgather_false`.
 - Variable: `variable_true` / `variable_exception`.
-- Exception branch (when `exceptionSwitch=true`, e.g. LLM/Branch/Condition/ChatGather): `…_exception`.
+- Exception outlet (a wired edge when `exceptionSwitch=true`): LLM `LLM_exception`, Condition `conditions_exception`, ChatGather `qa-collect_exception`, Variable `variable_exception`. **The Classifier (Branch) is excluded** — its exception is the preset `exceptionSwitch` row, not a `branch_exception` edge.
 
 **Common wrong handles (all draw distorted lines — never emit these):**
 - Capitalized / wrong key: `left7-Branch`, `left7-Dataset`, `left2-Output` → keys are case-sensitive and mostly lowercase (only `LLM` is uppercase); use `left7-branch`, `left7-knowledge`, `left2-output`.
 - Made-up Dataset outputs: `right7-hasresult` / `right7-noresult` → use `right7-knowledge_true` / `right7-knowledge_false`.
-- Semantic / invented Branch keys: `right5-product`, `right5-branch1` → use `right5-branch_<branchId>` (a stable unique id, e.g. the timestamp `branch_1780657352928`, reused consistently for that category) and `right5-branch_other` for the fallback.
+- Semantic / invented Branch keys: `right5-product`, `right5-branch1` → use `right5-branch_1`, `right5-branch_2`, … (sequential per classifier) and `right5-branch_other` for the fallback. Do **not** use a timestamp id here, and do **not** put the id in `condition` — the rule text goes in `condition`.
 
-**Example** (LLM #4 → Output #2, and Branch #5 → Dataset #7 on its first branch):
+**Example** (LLM #4 → Output #2, and Branch #5 → Dataset #7 on its first category):
 ```json
-{ "sourceHandle": "right4-LLM",                 "targetHandle": "left2-output",    "nextComponentId": 2 }
-{ "sourceHandle": "right5-branch_1780657352928","targetHandle": "left7-knowledge", "nextComponentId": 7, "condition": "1" }
+{ "id": 100001, "sourceHandle": "right4-LLM",        "targetHandle": "left2-output",    "nextComponentId": 2, "sort": 100001 }
+{ "id": 100002, "sourceHandle": "right5-branch_1",   "targetHandle": "left7-knowledge", "nextComponentId": 7, "sort": 100002,
+  "name": "faq", "condition": "The user is asking about product features, usage, or rules." }
 ```
 
 **Layout:** each node renders ~320px wide; place components with generous horizontal/vertical spacing

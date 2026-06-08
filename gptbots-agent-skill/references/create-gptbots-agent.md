@@ -16,10 +16,11 @@ If the user provided an API key and wants to connect resources from an existing 
 Request header `Authorization: Bearer <API_KEY>`. Fill the real `docGroupIds`/table ids you found into the config; if not found, leave them blank (associate them on the platform after import).
 
 ### 3. Design and generate
-Start from the user's existing `.bot` (or generate the skeleton with `agent_config()` from `../scripts/build_gptbots_agent.py`, whose `save()` runs the validator), and only change documented fields. Key points:
-- Required top-level fields: `formatVersion`, `exportType=BOT`, `exportTime`, `name`, `botType`.
+Start from the user's existing `.bot` (or generate the skeleton with `agent_config()` from `../scripts/build_gptbots_agent.py`, whose `save()` runs the validator), and only change documented fields. Keep the identity prompt external like every other bot — a `prompts/` folder with `identity.md` (one md per prompt), loaded via `load_prompts("prompts/")` and passed as `prompt=P["identity"]` — rather than embedding the long text in the script. Key points:
+- Required top-level fields: `formatVersion`, `exportType=BOT`, `exportTime`, `name`, `botType`. `exportTime` MUST be an epoch-milliseconds integer (Long, e.g. `1765077600000`) — an ISO string like `"2026-06-07T00:00:00Z"` fails import with `value not allowed for field exportTime`.
 - Model id (`chatModelVersionId`, etc.) **left blank or as a placeholder** — the backend import backfills the default model; inventing real ids will cause errors.
 - Plugin authentication, `apiSecrets`, cross-organization references **left blank** — import always clears them.
+- **Always include top-level `"multiModal": {"multiModalInput": {}}`** — the import does no backfill and the console auto-save NPEs (HTTP 500 on every save) if `multiModalInput` is null (backend regression 2025-12-02); `agent_config()` emits this automatically. Don't guess the enum fields inside; copy from a real export or omit them.
 - `creativityLevel ∈ [0,0.95)`.
 - **The identity `prompt` is the highest-leverage field in the whole config** — it drives the Agent's runtime quality and efficiency. Write it with extra care: clear role/goal/boundaries/output format in short imperative sentences, no filler, no internal contradictions (see *Prompt quality for LLM-capable nodes* in SKILL.md).
 

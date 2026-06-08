@@ -103,8 +103,11 @@ GATHER_VALUE_TYPES = {"string", "bool", "integer", "number", "datetime", "list"}
 OPTION_FIELD_TYPES = {"string", "multiString", "bool", "integer", "number",
                       "datetime", "phoneNumber", "email", "radio", "checkbox"}  # OptionFieldTypeEnum
 FORM_GATHER_TYPES = {"single", "all"}                                         # FormGatherType
-VARIABLE_TYPES = {"USER_PROPERTY", "CUSTOM_VARIABLE"}                         # VariableType
-VARIABLE_OPERATE_TYPES = {"CLEAR", "COVER", "APPEND"}                         # VariableOperateType
+VARIABLE_TYPES = {"USER_PROPERTY", "CUSTOM_VARIABLE"}                         # VariableType (legacy field, optional)
+VARIABLE_OPERATE_TYPES = {"CLEAR", "COVER", "APPEND"}                         # VariableOperateType (legacy field)
+# Real export shape of variableSetValueConfigs[] is {variableName, operation, value};
+# `operation` is capitalized (Cover/Clear/Append), NOT the legacy COVER/CLEAR/APPEND.
+VARIABLE_OPERATIONS = {"Cover", "Clear", "Append"}                            # operation (real export)
 COMBINE_TYPES = {"and", "or"}                                                 # CombineEnum
 REGULAR_CATEGORIES = {"GlobalVariable", "UserProperty", "BrowserProperty", "Upstream",
                       "WhatsApp", "Telegram", "LiveChat", "LiveDesk", "Line", "Start",
@@ -223,6 +226,27 @@ def check_top_level(cfg, rep):
         rep.err("L0_TYPE_MISMATCH", "$.exportType", f"{bot_type} requires exportType=BOT")
     if _is_blank(cfg.get("formatVersion")):
         rep.warn("L0_FORMAT_VERSION", "$.formatVersion", "It is recommended to set formatVersion (e.g. \"1.0\")")
+    export_time = cfg.get("exportTime")
+    if export_time is not None and (isinstance(export_time, bool) or not isinstance(export_time, int)):
+        rep.err("L0_EXPORT_TIME", "$.exportTime",
+                f"exportTime must be an epoch-milliseconds integer (Long), got {type(export_time).__name__}: {export_time!r}",
+                "Use int(datetime.now(timezone.utc).timestamp() * 1000); ISO strings fail import")
+    # Auto-save NPE guard (backend regression 2025-12-02): the import copies `multiModal`
+    # verbatim with no default backfill, while the console auto-save dereferences
+    # multiModalForm.multiModalInput.chatMode WITHOUT a null check — so a BOT imported
+    # without a non-null multiModal.multiModalInput 500s on EVERY auto-save (the import
+    # itself succeeds, the bot is then uneditable). Normally-created bots get defaults at
+    # creation and never hit this; only imported bots do.
+    if export_type == "BOT":
+        mm = cfg.get("multiModal")
+        mmi = mm.get("multiModalInput") if isinstance(mm, dict) else None
+        if not isinstance(mmi, dict):
+            rep.err("L0_MULTIMODAL_AUTOSAVE_NPE", "$.multiModal",
+                    "multiModal.multiModalInput is missing/null — the imported bot will hit a "
+                    "backend NPE (HTTP 500) on every console auto-save",
+                    'Add at least "multiModal": {"multiModalInput": {}} (empty object is safe: '
+                    "null chatMode is only compared against INTERRUPT). Do NOT guess "
+                    "audioMode/chatMode/imageMode enum values — copy them from a real export")
     return bot_type
 
 
@@ -414,6 +438,26 @@ def _has_cycle(id_set, adj):
 
 # --------------------------- L4 FlowAgent ---------------------------
 
+# A platform variable reference is `{{name}}` (double braces). A single-braced
+# `{name}` is almost always the result of running str.format()/f-string over a prompt
+# that contained `{{...}}` — .format() COLLAPSES `{{x}}` to `{x}`, after which GPTBots
+# no longer recognizes the variable. The lookbehind/lookahead skip correctly-doubled
+# braces and match only the broken single-brace form.
+_SINGLE_BRACE_VAR = re.compile(r'(?<!\{)\{([A-Za-z_]\w*)\}(?!\})')
+
+
+def _check_single_brace_vars(text, path, rep):
+    if not isinstance(text, str):
+        return
+    hits = _SINGLE_BRACE_VAR.findall(text)
+    if hits:
+        uniq = sorted(set(hits))
+        rep.warn("MSG_SINGLE_BRACE_VAR", path,
+                 f"single-brace variable(s) {', '.join('{'+h+'}' for h in uniq)} — platform "
+                 f"variables need DOUBLE braces ({{{{{uniq[0]}}}}}); a single brace usually means "
+                 f"str.format()/f-string collapsed the {{{{...}}}} (use .replace() for substitution)")
+
+
 def _check_component_enums(c, cp, rep):
     """Validate enum-valued fields inside one flow component (mirrors backend strict parse)."""
     _check_enum(c.get("reasoningEffort"), REASONING_EFFORTS, "COMP_ENUM_REASONING_EFFORT", cp + ".reasoningEffort", rep, "reasoningEffort")
@@ -423,19 +467,54 @@ def _check_component_enums(c, cp, rep):
     _check_enum(c.get("responseFormat"), RESPONSE_FORMATS, "COMP_ENUM_RESPONSE_FORMAT", cp + ".responseFormat", rep, "responseFormat")
     _check_enum(c.get("contentType"), FLOW_CONTENT_TYPES, "COMP_ENUM_CONTENT_TYPE", cp + ".contentType", rep, "contentType")
     _check_list_enum(c.get("multiResponseTypes"), MULTI_MODAL_DATA_TYPES, "COMP_ENUM_MULTI_RESPONSE", cp + ".multiResponseTypes", rep, "multiResponseTypes")
+    # Message/Predefine reply text (their content field) — also variable-scanned.
+    _check_single_brace_vars(c.get("content"), cp + ".content", rep)
     # prompt message lists (LLM / Branch / Condition / ChatGather / FormGather)
     for fld in ("messages", "datasetMessages"):
         msgs = c.get(fld)
         if isinstance(msgs, list):
             for i, m in enumerate(msgs):
                 if isinstance(m, dict):
-                    _check_enum(m.get("type"), PROMPT_MESSAGE_TYPES, "COMP_ENUM_MESSAGE_TYPE", f"{cp}.{fld}[{i}].type", rep, "message type")
+                    mpath = f"{cp}.{fld}[{i}]"
+                    _check_enum(m.get("type"), PROMPT_MESSAGE_TYPES, "COMP_ENUM_MESSAGE_TYPE", mpath + ".type", rep, "message type")
+                    _check_single_brace_vars(m.get("text"), mpath + ".text", rep)
+                    # The prompt text lives in `text`. A `content` key here is the wrong
+                    # schema (that's the Message/Predefine reply field) — on import the
+                    # prompt deserializes BLANK, silently breaking the node.
+                    if "content" in m and "text" not in m:
+                        rep.err("MSG_CONTENT_FIELD", mpath + ".content",
+                                "prompt message uses `content`; the field must be `text` "
+                                "(a `content` key here imports as a BLANK prompt)",
+                                'Rename "content" to "text"')
+                    # An empty Role message = blank identity prompt (the node has no instructions).
+                    if m.get("type") == "Role":
+                        rtext = m.get("text") if "text" in m else m.get("content")
+                        if not (rtext and str(rtext).strip()):
+                            rep.err("MSG_ROLE_EMPTY", mpath + ".text",
+                                    f"the Role (identity prompt) of {c.get('type')} #{c.get('id')} is empty "
+                                    "— the node will run with no instructions",
+                                    "Provide a non-empty identity prompt in the Role message's `text`")
     # gather fields (ChatGather / FormGather)
     gfs = c.get("gatherFields")
     if isinstance(gfs, list):
         for i, g in enumerate(gfs):
             if isinstance(g, dict):
                 gp = f"{cp}.gatherFields[{i}]"
+                # The backend reads the field name from `fieldName` (label from `showName`).
+                # name/variableName/key are silently dropped on import → the platform then
+                # assigns random default names (age/user_birthday/…). Catch that here.
+                fname = g.get("fieldName")
+                if _is_blank(fname):
+                    hint = next((k for k in ("name", "variableName", "key") if g.get(k)), None)
+                    rep.err("GATHER_FIELD_NAME", gp + ".fieldName",
+                            "gather field is missing `fieldName`" +
+                            (f" (found '{hint}', which the import drops → random default name)" if hint else ""),
+                            "Set fieldName (+ showName for the label); use gather_fields() in the builder")
+                elif not re.match(r"^[a-z0-9_]+$", str(fname)):
+                    rep.err("GATHER_FIELD_NAME_FORMAT", gp + ".fieldName",
+                            f"fieldName {fname!r} must contain only lowercase letters, digits, "
+                            "and underscores ([a-z0-9_]) — it becomes a variable key",
+                            "Rename it to e.g. user_name")
                 _check_enum(g.get("gatherType"), GATHER_FIELD_TYPES, "COMP_ENUM_GATHER_TYPE", gp + ".gatherType", rep, "gatherType")
                 _check_enum(g.get("valueType"), GATHER_VALUE_TYPES, "COMP_ENUM_GATHER_VALUE_TYPE", gp + ".valueType", rep, "valueType")
                 _check_enum(g.get("optionFieldType"), OPTION_FIELD_TYPES, "COMP_ENUM_OPTION_FIELD_TYPE", gp + ".optionFieldType", rep, "optionFieldType")
@@ -448,6 +527,14 @@ def _check_component_enums(c, cp, rep):
         for i, v in enumerate(vscs):
             if isinstance(v, dict):
                 vp = f"{cp}.variableSetValueConfigs[{i}]"
+                # Real export shape: {variableName, operation, value}. `operation` is
+                # capitalized (Cover/Clear/Append). Validate it when present.
+                _check_enum(v.get("operation"), VARIABLE_OPERATIONS, "COMP_ENUM_VARIABLE_OPERATION", vp + ".operation", rep, "operation")
+                if _is_blank(v.get("variableName")):
+                    rep.err("COMP_VARIABLE_NAME", vp + ".variableName",
+                            "variableSetValueConfigs entry is missing variableName",
+                            "Each assignment needs {variableName, operation, value}")
+                # legacy fields, still validated if a caller emits them
                 _check_enum(v.get("variableType"), VARIABLE_TYPES, "COMP_ENUM_VARIABLE_TYPE", vp + ".variableType", rep, "variableType")
                 _check_enum(v.get("variableOperateType"), VARIABLE_OPERATE_TYPES, "COMP_ENUM_VARIABLE_OPERATE_TYPE", vp + ".variableOperateType", rep, "variableOperateType")
     # rule groups (Regular / Bool)
@@ -481,11 +568,64 @@ def _check_component_edges(c, cp, comp_type_by_id, rep):
     owner_id = c.get("id")
     owner_type = c.get("type")
     src_key = HANDLE_SOURCE_KEY.get(owner_type)
+    # A classifier must wire its built-in Other fallback (branch_other), or unmatched
+    # messages dead-end. Detect it across this component's edges.
+    if owner_type == "Branch":
+        has_other = any(isinstance(nx, dict) and str(nx.get("sourceHandle", "")).endswith("-branch_other")
+                        for nx in (c.get("nextComponents") or []))
+        if not has_other:
+            rep.err("BRANCH_NO_OTHER", cp + ".nextComponents",
+                    f"Classifier #{owner_id} has no branch_other (built-in Other) edge — "
+                    "unmatched messages would dead-end",
+                    'Add the Other fallback edge with name="_other", condition="" '
+                    "(use branch_other() in the builder)")
+    # A Condition node carries its IF text on the conditions_true edge's `condition`
+    # (name="_true"); the conditions_false edge is name="_false", condition="". An
+    # empty true-edge condition = an empty IF box on the canvas.
+    if owner_type == "Condition":
+        edges = [nx for nx in (c.get("nextComponents") or []) if isinstance(nx, dict)]
+        true_e = next((e for e in edges if str(e.get("sourceHandle", "")).endswith("-conditions_true")), None)
+        false_e = next((e for e in edges if str(e.get("sourceHandle", "")).endswith("-conditions_false")), None)
+        if true_e is None:
+            rep.err("CONDITION_NO_TRUE", cp + ".nextComponents",
+                    f"Condition #{owner_id} has no conditions_true edge",
+                    "Wire both outlets with condition_edges() in the builder")
+        else:
+            if not str(true_e.get("condition") or "").strip():
+                rep.err("CONDITION_IF_EMPTY", cp + ".nextComponents",
+                        f"Condition #{owner_id} conditions_true edge has an empty `condition` — "
+                        "the IF condition text must live here (the canvas IF box reads it)",
+                        'Put the IF text on the conditions_true edge (condition_edges(if_text=...))')
+            if true_e.get("name") != "_true":
+                rep.err("CONDITION_EDGE_NAME", cp + ".nextComponents",
+                        f"Condition #{owner_id} conditions_true edge name must be \"_true\" "
+                        f"(got {true_e.get('name')!r})", 'Set name="_true"')
+        if false_e is not None and false_e.get("name") != "_false":
+            rep.err("CONDITION_EDGE_NAME", cp + ".nextComponents",
+                    f"Condition #{owner_id} conditions_false edge name must be \"_false\" "
+                    f"(got {false_e.get('name')!r})", 'Set name="_false"')
     for k, nx in enumerate(c.get("nextComponents") or []):
         if not isinstance(nx, dict):
             continue
         ep = f"{cp}.nextComponents[{k}]"
         sh, th, nid = nx.get("sourceHandle"), nx.get("targetHandle"), nx.get("nextComponentId")
+        # Backend BotFlowNext parses `id`, `nextComponentId`, `sort` as Integer with strict
+        # Jackson typing (same as `exportTime`): ANY string — "e1", "vueflow__edge-...", even a
+        # quoted number "1" — fails import with 'value X is not allowed for field id'.
+        # (FAIL_ON_UNKNOWN_PROPERTIES=false: extra fields are tolerated; only wrong TYPES kill
+        # the import.) Use unique integers for edge ids; 100000+seq avoids colliding with
+        # component ids; `sort` may equal `id`.
+        eid = nx.get("id")
+        if eid is not None and (isinstance(eid, bool) or not isinstance(eid, int)):
+            rep.err("EDGE_ID_NOT_LONG", ep + ".id",
+                    f"Edge id must be a bare integer (backend Integer), got {type(eid).__name__}: {eid!r}",
+                    "Use a unique integer, e.g. 100000+seq (won't collide with component ids)")
+        for fld in ("nextComponentId", "sort"):
+            v = nx.get(fld)
+            if v is not None and (isinstance(v, bool) or not isinstance(v, int)):
+                rep.err("EDGE_INT_FIELD", f"{ep}.{fld}",
+                        f"{fld} must be a bare integer (backend Integer), got {type(v).__name__}: {v!r}",
+                        f'Write "{fld}": 2, not "{fld}": "2"')
         if sh:
             ps = _parse_handle(sh)
             if ps is None or ps[0] != "right":
@@ -501,6 +641,41 @@ def _check_component_edges(c, cp, comp_type_by_id, rep):
                     rep.err("EDGE_SOURCE_KEY", ep + ".sourceHandle",
                             f"sourceHandle key '{skey}' does not match a {owner_type} component (expected '{src_key}')",
                             f"Use right{owner_id}-{src_key}...")
+                # Classifier (Branch) rule branches: the handle suffix is a sequential
+                # number (branch_1, branch_2, …) and the RULE lives in the edge's
+                # `condition` as natural-language text. A numeric/empty condition means the
+                # rule was wrongly stored as an id (the UI then shows the id, not the rule).
+                if owner_type == "Branch":
+                    suffix = sh.split("-", 1)[1] if "-" in sh else ""
+                    suffix = suffix[len(skey) + 1:] if suffix.startswith(skey + "_") else ""
+                    if suffix == "exception":
+                        rep.err("BRANCH_EXCEPTION_EDGE", ep + ".sourceHandle",
+                                "Classifier has no branch_exception edge — its exception is "
+                                "governed by the exceptionSwitch toggle (a system-preset row), "
+                                "not an authored edge",
+                                "Remove this edge; set exceptionSwitch=true on the classifier instead")
+                    elif suffix == "other":
+                        # The built-in Other edge must be name="_other" + condition=""
+                        # (empty string, not null). name=null makes the platform render
+                        # branch_other as an editable BLANK category instead of mapping
+                        # it to the built-in Other.
+                        if nx.get("name") != "_other":
+                            rep.err("BRANCH_OTHER_NAME", ep + ".name",
+                                    f"branch_other edge name must be \"_other\" (got {nx.get('name')!r}) "
+                                    "— otherwise the platform renders it as an editable blank "
+                                    "category instead of the built-in Other",
+                                    'Set name="_other" and condition="" (use branch_other() in the builder)')
+                    elif suffix:
+                        cond = nx.get("condition")
+                        cond_s = "" if cond is None else str(cond).strip()
+                        if not cond_s or cond_s.isdigit():
+                            rep.err("BRANCH_RULE_IS_ID", ep + ".condition",
+                                    f"Classifier branch '{nx.get('name') or suffix}' has "
+                                    f"{'an empty' if not cond_s else 'a numeric-id'} condition "
+                                    f"({cond!r}) — the routing rule must be natural-language "
+                                    "text here, not an id",
+                                    "Put the branch's routing rule text in `condition` "
+                                    "(use branch_edge(rule=...) in the builder)")
         if nid is not None:
             if not th:
                 rep.err("EDGE_TARGET_MISSING", ep + ".targetHandle",
@@ -551,10 +726,23 @@ def check_flow(flow_rule, rep):
         cid = c.get("id")
         if cid is None:
             rep.err("FLOW_COMP_ID", cp + ".id", "Component id cannot be empty")
+        elif isinstance(cid, bool) or not isinstance(cid, int):
+            # Backend BotFlowComponent.id is Integer (strict Jackson parsing): "1" (quoted) or
+            # "vueflow__node-..." fails import with 'value X is not allowed for field id'.
+            rep.err("FLOW_COMP_ID_NOT_INT", cp + ".id",
+                    f"Component id must be a bare integer (backend Integer), got {type(cid).__name__}: {cid!r}",
+                    'Write "id": 1, not "id": "1" or a vueflow__node-... string')
         elif cid in id_set:
             rep.err("FLOW_COMP_ID_DUP", cp + ".id", f"Duplicate component id: {cid}")
         else:
             id_set.add(cid)
+        # x / y are backend Integer fields — same strict parsing
+        for fld in ("x", "y"):
+            v = c.get(fld)
+            if v is not None and (isinstance(v, bool) or not isinstance(v, int)):
+                rep.err("FLOW_COMP_XY_NOT_INT", f"{cp}.{fld}",
+                        f"{fld} must be a bare integer (backend Integer), got {type(v).__name__}: {v!r}",
+                        f'Write "{fld}": 420, not a quoted number or float')
         if _is_blank(c.get("type")):
             rep.err("FLOW_COMP_TYPE", cp + ".type", "Component type cannot be empty")
         elif c.get("type") not in FLOW_COMPONENT_TYPES:
@@ -564,21 +752,95 @@ def check_flow(flow_rule, rep):
     # component id -> type (for target-handle key validation)
     comp_type_by_id = {c.get("id"): c.get("type") for c in comps if isinstance(c, dict)}
     # next-target validation + terminal nodes + enum / connection-handle integrity
+    edge_id_seen = set()
+    edge_sort_seen = set()
     for i, c in enumerate(comps):
         if not isinstance(c, dict):
             continue
         cp = f"$.flowRule.components[{i}]"
         ctype = c.get("type")
         nexts = c.get("nextComponents") or []
+        # Duplicate-line detection: platform imports have been observed duplicating exception
+        # edges (an old `Exception` entry with condition=null + a new `_exception` entry, same
+        # id / sourceHandle). Harmless to the engine (nextComponents is pass-through, no toMap)
+        # but it is dirty data and renders doubled lines — flag same (sourceHandle, target).
+        line_seen = set()
+        handle_seen = set()
         for k, nx in enumerate(nexts):
-            if isinstance(nx, dict) and nx.get("nextComponentId") is not None \
+            if not isinstance(nx, dict):
+                continue
+            # Each output handle drives a single edge. A repeated sourceHandle on the
+            # same component is a duplicate outlet (the classic import artifact: an old
+            # `Exception`/`name=null` edge plus a new `_exception` one on the same
+            # conditions_exception/branch port). These duplicates corrupt the node —
+            # e.g. the Condition's IF port renders greyed/unusable — so this is an error,
+            # not just a doubled line.
+            shandle = nx.get("sourceHandle")
+            if shandle is not None:
+                if shandle in handle_seen:
+                    rep.err("EDGE_DUP_HANDLE", f"{cp}.nextComponents[{k}].sourceHandle",
+                            f"Duplicate sourceHandle {shandle!r} on component #{c.get('id')} — "
+                            "an output port may have only one edge; duplicates (often leftover "
+                            "Exception/_exception import artifacts) corrupt the node and grey out ports",
+                            "Keep exactly one edge per handle; delete the duplicates")
+                handle_seen.add(shandle)
+            line = (nx.get("sourceHandle"), nx.get("nextComponentId"))
+            if line[0] is not None and line[1] is not None:
+                if line in line_seen:
+                    rep.warn("EDGE_DUP_LINE", f"{cp}.nextComponents[{k}]",
+                             f"Duplicate edge: sourceHandle {line[0]!r} → component {line[1]} "
+                             f"appears more than once (typical import artifact: old 'Exception' "
+                             f"+ new '_exception' entries) — remove the duplicate")
+                line_seen.add(line)
+            if nx.get("nextComponentId") is not None \
                     and nx.get("nextComponentId") not in id_set:
                 rep.err("FLOW_NEXT_MISSING", f"{cp}.nextComponents[{k}].nextComponentId",
                         f"Points to a non-existent component: {nx.get('nextComponentId')}")
+            eid = nx.get("id")
+            if isinstance(eid, int) and not isinstance(eid, bool):
+                if eid in edge_id_seen:
+                    rep.err("EDGE_ID_DUP", f"{cp}.nextComponents[{k}].id",
+                            f"Duplicate edge id: {eid}", "Edge ids must be unique, e.g. 100000+seq")
+                edge_id_seen.add(eid)
+            # `sort` must be globally unique across all edges (real exports set sort == id).
+            # A per-node counter (1, 2, …) collides across nodes and makes the canvas
+            # mis-render — branch target nodes render greyed/unusable.
+            esort = nx.get("sort")
+            if isinstance(esort, int) and not isinstance(esort, bool):
+                if esort in edge_sort_seen:
+                    rep.err("EDGE_SORT_DUP", f"{cp}.nextComponents[{k}].sort",
+                            f"Duplicate edge sort: {esort} — sort must be globally unique "
+                            "(collisions grey out branch target nodes on the canvas)",
+                            "Set sort equal to the edge id (a unique 100000+seq integer)")
+                edge_sort_seen.add(esort)
         if ctype in {"Output", "Human"} and nexts:
             rep.warn("FLOW_TERMINAL", cp, f"{ctype} is a terminal node and usually should have no downstream")
         if ctype not in {"Output", "Human", "Message"} and not nexts:
             rep.warn("FLOW_NO_NEXT", cp, f"The {ctype} component has no downstream connection; please confirm whether a branch was missed")
+        # A Message (pass-through) component's `content` must be a JSON string keyed by
+        # contentType (e.g. '{"Text":"..."}'); a plain string renders an empty message.
+        if ctype == "Message" and c.get("content") is not None:
+            ct = c.get("contentType") or "Text"
+            raw = c.get("content")
+            ok = False
+            if isinstance(raw, str):
+                try:
+                    d = json.loads(raw)
+                    ok = isinstance(d, dict) and ct in d
+                except (ValueError, TypeError):
+                    ok = False
+            if not ok:
+                rep.err("MSG_CONTENT_NOT_JSON", cp + ".content",
+                        f"Message #{c.get('id')} content must be a JSON string keyed by "
+                        f'contentType, e.g. {{"{ct}":"...text..."}} — a plain string renders empty',
+                        "Use message_content(text, content_type) in the builder")
+        # LLM-driven nodes need maxRespTokens, or the canvas shows an empty "Maximum Response".
+        if ctype in {"LLM", "Branch", "Condition", "ChatGather", "FormGather"}:
+            mrt = c.get("maxRespTokens")
+            if mrt is None or (isinstance(mrt, str) and not mrt.strip()):
+                rep.warn("COMP_MAX_TOKENS_NULL", cp + ".maxRespTokens",
+                         f"{ctype} #{c.get('id')} has no maxRespTokens — the canvas shows an "
+                         "empty 'Maximum Response'; default it (e.g. 4096)")
         _check_component_enums(c, cp, rep)
         _check_component_edges(c, cp, comp_type_by_id, rep)
 

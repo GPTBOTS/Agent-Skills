@@ -11,7 +11,7 @@ older generation scripts keep working.
 """
 from build_gptbots_flowagent import (  # noqa: F401
     FlowAgentBuilder, role, user_input, kb_msg, cond_msg, mem, ke,
-    gather_fields, var_cfgs,
+    gather_fields, var_cfgs, message_content,
 )
 from build_gptbots_workflow import WorkflowBuilder  # noqa: F401
 

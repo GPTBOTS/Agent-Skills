@@ -37,6 +37,13 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Convenience re-export: keep the (often long) identity prompt in an external
+# prompts.md / .json and load it with load_prompts(...).
+try:
+    from gptbots_prompts import load_prompts, load_prompt_store  # noqa: F401
+except ImportError:
+    load_prompts = load_prompt_store = None
+
 
 def agent_config(name, prompt, welcome=None, guiding_questions=None, creativity=0.3,
                  bot_type="QuestionAnswer", description="", brief_introduction="",
@@ -52,8 +59,14 @@ def agent_config(name, prompt, welcome=None, guiding_questions=None, creativity=
     if not (prompt and prompt.strip()):
         raise ValueError("the identity prompt is the highest-leverage field — it must be non-empty")
     cfg = {"formatVersion": "1.0", "exportType": "BOT",
-           "exportTime": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+           "exportTime": int(datetime.now(timezone.utc).timestamp() * 1000),  # epoch ms (Long) — ISO strings are rejected on import
            "name": name, "botType": bot_type,
+           # Anti-NPE backfill: import copies `multiModal` verbatim (no default), but console
+           # auto-save dereferences multiModalForm.multiModalInput.chatMode without a null
+           # check (regression 2025-12-02) → a .bot imported without multiModal 500s on every
+           # auto-save. Empty multiModalInput = non-null VO with null enum fields (safe).
+           # Don't guess enum values; override via **extra with a block from a real export.
+           "multiModal": {"multiModalInput": {}},
            "chatModelVersionId": "", "creativityLevel": creativity, "prompt": prompt}
     if welcome is not None:
         cfg["welcomeMessage"] = welcome

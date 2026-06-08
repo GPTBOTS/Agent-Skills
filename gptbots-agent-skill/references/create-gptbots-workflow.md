@@ -18,6 +18,7 @@ Read `./workflow-nodes.md` (21 node types + required parameters + graph integrit
 Use `Authorization: Bearer <API_KEY>` against the regional base URL `https://api-${endpoint}.gptbots.ai` (`sg` default, `jp`, `th`) to call `GET /v1/database/tables/page`, `/v1/bot/knowledge/base/page` to fetch real table/knowledge-base ids and write them into DATABASE/DATASET nodes; leave HTTP authentication blank (configured after import). **Never call internal/console APIs**.
 
 ### 4. Generate
+- **Use the builder script instead of hand-writing JSON**: write a generation script that imports `WorkflowBuilder` from `../scripts/build_gptbots_workflow.py` — it auto-generates edge handles and layout, and `save()` runs the validator (pass `source_handle=` explicitly for CONDITION/INTENT branch edges, matching each branch's `sourceHandle`). Keep prompts as Python constants; regenerate from the script on every revision. (`python3 ../scripts/build_gptbots_workflow.py` prints usage; `--demo <dir>` emits a validated example.)
 - Top level: `formatVersion`, `exportType=WORKFLOW`, `exportTime`, `name`, `botType=Workflow`, `workflow.workflowNodes[]`, `workflow.workflowEdges[]`.
 - Leave model id blank (backend backfills); leave cross-organization references and authentication blank (cleared on import).
 - A `NODE` reference in a node's `inputs[]` looks like `nodeId#name#id`, and the referenced node must be upstream.

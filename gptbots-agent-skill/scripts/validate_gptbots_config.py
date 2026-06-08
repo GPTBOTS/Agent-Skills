@@ -29,7 +29,7 @@ import json
 import re
 import sys
 
-# Bot types this skill authors. The backend BotType enum also has MultiAgent / Claw, but this
+# Bot types this skill authors. The backend BotType enum has additional types, but this
 # skill only generates QuestionAnswer / Flow / Workflow, so the validator scopes to those.
 BOT_TYPES = {"QuestionAnswer", "Flow", "Workflow"}
 EXPORT_TYPES = {"BOT", "WORKFLOW"}

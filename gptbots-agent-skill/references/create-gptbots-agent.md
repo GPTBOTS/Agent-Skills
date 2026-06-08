@@ -1,6 +1,6 @@
 # Create / optimize a GPTBots Agent (.bot)
 
-> Reference for the `GPTBots Skill` workflow when the target is a **QuestionAnswer Agent or MultiAgent**. Turn "scenario + requirements" (or a user-provided existing `.bot` file) into a **plaintext `.bot` config** (`exportType=BOT`, `botType=QuestionAnswer` or `MultiAgent`) that imports directly into the GPTBots platform.
+> Reference for the `GPTBots Skill` workflow when the target is a **QuestionAnswer Agent**. Turn "scenario + requirements" (or a user-provided existing `.bot` file) into a **plaintext `.bot` config** (`exportType=BOT`, `botType=QuestionAnswer`) that imports directly into the GPTBots platform.
 
 ## Workflow (follow the order strictly)
 
@@ -16,11 +16,11 @@ If the user provided an API key and wants to connect resources from an existing 
 Request header `Authorization: Bearer <API_KEY>`. Fill the real `docGroupIds`/table ids you found into the config; if not found, leave them blank (associate them on the platform after import).
 
 ### 3. Design and generate
-Start from the user's existing `.bot` (or a minimal valid skeleton when creating from scratch), and only change documented fields. Key points:
+Start from the user's existing `.bot` (or generate the skeleton with `agent_config()` from `../scripts/build_gptbots_agent.py`, whose `save()` runs the validator), and only change documented fields. Key points:
 - Required top-level fields: `formatVersion`, `exportType=BOT`, `exportTime`, `name`, `botType`.
 - Model id (`chatModelVersionId`, etc.) **left blank or as a placeholder** — the backend import backfills the default model; inventing real ids will cause errors.
 - Plugin authentication, `apiSecrets`, cross-organization references **left blank** — import always clears them.
-- `creativityLevel ∈ [0,0.95)`; `MultiAgent` requires a valid planner node.
+- `creativityLevel ∈ [0,0.95)`.
 - **The identity `prompt` is the highest-leverage field in the whole config** — it drives the Agent's runtime quality and efficiency. Write it with extra care: clear role/goal/boundaries/output format in short imperative sentences, no filler, no internal contradictions (see *Prompt quality for LLM-capable nodes* in SKILL.md).
 
 ### 4. Quality check (mandatory; do not deliver if it fails)

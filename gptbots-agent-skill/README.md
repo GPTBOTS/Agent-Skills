@@ -10,16 +10,18 @@ After external AI tools (Claude Code / Codex / Cursor / OpenClaw / Cline / Winds
 authoring-skills/
 ├── SKILL.md                              # the generic GPTBots Skill guide (copied to the bundle root; do not bind to a bot)
 ├── references/
-│   ├── create-gptbots-agent.md           # QuestionAnswer / MultiAgent → .bot
+│   ├── create-gptbots-agent.md           # QuestionAnswer Agent → .bot
 │   ├── create-gptbots-flowagent.md       # FlowAgent (botType=Flow) → .bot
 │   ├── create-gptbots-workflow.md        # Workflow → .flow
 │   ├── call-gptbots-api.md               # drive Agents via the public API (playbooks)
+│   ├── organize-knowledge-base.md        # curate raw docs → import-ready Markdown / table / Q&A
 │   ├── flowagent-components.md           # FlowAgent component spec
 │   ├── workflow-nodes.md                 # Workflow 21-node spec
 │   ├── variables-reference.md            # catalog of referenceable variables
 │   └── materials-mapping.md              # material → mechanism mapping
 └── scripts/
-    └── validate_gptbots_config.py        # .bot/.flow quality check (mandatory self-check)
+    ├── validate_gptbots_config.py        # .bot/.flow quality check (mandatory self-check)
+    └── validate_knowledge_files.py       # knowledge-base file quality check (Document / Table / Q&A)
 ```
 
 No per-agent files are bundled: users supply their own exported `.bot`/`.flow` for optimization tasks, and new configs are generated from scenario + requirements.
@@ -37,3 +39,8 @@ The rules in `validate_gptbots_config.py` are ported from the real backend/front
 - Backend `oversea-ailab-bot/.../service/workflow/component/utils/WorkflowRuntimeChecker.java`, `WorkflowNodeChecker.java`, `service/exportimport/BotTransferService.java`
 - Frontend `ailab-d-developer-frontend/src/features/workflow/canvas/data/handle-node-error.ts`, `handle-connection-point.ts` (Workflow canvas); `src/features/flow-bot/canvas/data/handle-connection-point.ts` + `convert.ts` (FlowAgent canvas edge handles)
 - API docs (authoritative source for call-gptbots-api): https://www.gptbots.ai/docs/api-reference/overview
+
+The rules in `validate_knowledge_files.py` and `organize-knowledge-base.md` mirror the knowledge-base storage formats. When they drift, re-sync against:
+- Backend `oversea-ailab-common/.../enums/BotDataSegmentType.java`, `BotDataPurposeType.java`; `oversea-ailab-bot/.../bean/entity/BotDataSplitRule.java` (headerType R1/R2/R3 | C1/C2/C3), `QuestionAnswer.java` (question/answer fields)
+- Frontend `ailab-d-developer-frontend/src/features/knowledge-manage/components/localQaDocument.vue`, `localExelDocument.vue`, `src/features/set-creation/rowExcel.vue` (header-row picker)
+- Knowledge-base docs: https://www.gptbots.ai/zh_CN/docs/tutorial/knowledge-base

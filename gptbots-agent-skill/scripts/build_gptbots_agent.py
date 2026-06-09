@@ -51,6 +51,9 @@ except ImportError:
     load_prompts = load_prompt_store = None
 
 DEFAULT_MAX_TOKENS = 4096
+# Platform built-in avatar — a custom/blank logo URL renders as a broken icon, so
+# default to the platform's bundled default avatar (override via logo=).
+DEFAULT_AGENT_LOGO = "/developer/static/images/avatar/default_avatar_202506131619.png"
 
 
 def agent_config(name, prompt, first_message=None, preset_questions=None, creativity=0.3,
@@ -81,6 +84,7 @@ def agent_config(name, prompt, first_message=None, preset_questions=None, creati
            # check (regression 2025-12-02) → a .bot imported without multiModal 500s on every
            # auto-save. Empty multiModalInput = non-null VO with null enum fields (safe).
            # Don't guess enum values; override via **extra with a block from a real export.
+           "logo": DEFAULT_AGENT_LOGO,   # platform default avatar (override via logo= / extra)
            "multiModal": {"multiModalInput": {}},
            "chatModelVersionId": "", "creativityLevel": creativity,
            "maxRespTokens": int(max_tokens), "prompt": prompt}

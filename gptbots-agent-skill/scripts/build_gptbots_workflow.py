@@ -50,6 +50,10 @@ except ImportError:
     load_prompts = load_prompt_store = None
 
 
+# Platform built-in workflow avatar — a blank/custom logo URL renders as a broken icon.
+DEFAULT_WORKFLOW_LOGO = "/developer/static/images/avatar/default-workflow-avatar_1628.png"
+
+
 def branch_handle(node_id, suffix):
     """Mint a CONDITION/INTENT branch sourceHandle: `source-{node_id}-{suffix}`.
     Use the SAME value in the branch param (conditionBranches[].sourceHandle /
@@ -58,8 +62,9 @@ def branch_handle(node_id, suffix):
 
 
 class WorkflowBuilder:
-    def __init__(self, name):
+    def __init__(self, name, logo=DEFAULT_WORKFLOW_LOGO):
         self.name = name
+        self.logo = logo
         self.nodes = []
         self.edges = []
         self._by_id = {}
@@ -120,7 +125,7 @@ class WorkflowBuilder:
         self._auto_layout()
         return {"formatVersion": "1.0", "exportType": "WORKFLOW",
                 "exportTime": int(datetime.now(timezone.utc).timestamp() * 1000),  # epoch ms (Long) — ISO strings are rejected on import
-                "name": self.name, "botType": "Workflow",
+                "name": self.name, "botType": "Workflow", "logo": self.logo,
                 "workflow": {"workflowNodes": self.nodes, "workflowEdges": self.edges}}
 
     def save(self, path, validate=True):

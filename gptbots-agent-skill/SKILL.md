@@ -3,7 +3,7 @@ name: gptbots-agent-skill
 description: Create, read, update, and optimize GPTBots (https://www.gptbots.ai) Agent and Workflow configurations (.bot / .flow files), drive published Agents/Workflows via the GPTBots Open API, and organize raw documents (PDF, Word, Excel, web, FAQ) into import-ready knowledge-base files. Use this skill whenever the user mentions GPTBots, provides or references a .bot or .flow file, wants to build/optimize a chatbot Agent, FlowAgent, or Workflow, wants API-based evaluation, quality assessment, RAG testing, scheduled triggering, or knowledge-base/data management, or wants to clean up / restructure / curate / organize / optimize knowledge-base documents into Markdown / table / Q&A formats and tune chunking, metadata & retrieval — even if they just say "optimize my bot config" with an attached .bot/.flow file.
 license: MIT
 metadata:
-  version: 1.13.0
+  version: 1.13.1
   generatedBy: gptbots-agent-skill
 ---
 

@@ -86,6 +86,8 @@ _TERMINAL = {"Output", "Human"}
 DEFAULT_MAX_TOKENS = 4096
 # Node types that carry an LLM core and therefore need maxRespTokens set.
 _LLM_DRIVEN = {"LLM", "Branch", "Condition", "ChatGather", "FormGather"}
+# Platform built-in avatar — a blank/custom logo URL renders as a broken icon.
+DEFAULT_AGENT_LOGO = "/developer/static/images/avatar/default_avatar_202506131619.png"
 
 
 # ---------------------------------------------------------------------------
@@ -500,6 +502,7 @@ class FlowAgentBuilder:
         cfg = {"formatVersion": "1.0", "exportType": "BOT",
                "exportTime": int(datetime.now(timezone.utc).timestamp() * 1000),  # epoch ms (Long) — ISO strings are rejected on import
                "name": self.name, "botType": "Flow",
+               "logo": DEFAULT_AGENT_LOGO,   # platform default avatar (override via top_fields logo=)
                # Anti-NPE backfill + real values: the import copies `multiModal` verbatim
                # with NO default (BotTransferService), and the console auto-save reads
                # multiModalForm.multiModalInput.chatMode WITHOUT a null check

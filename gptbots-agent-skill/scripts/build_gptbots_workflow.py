@@ -6,18 +6,22 @@ Workflow `.flow` builder (botType=Workflow). One of three generators:
   build_gptbots_flowagent.py → FlowAgent .bot
   build_gptbots_workflow.py  → Workflow .flow (this file)
 
-Auto-generates edge handles (`right{srcId}-{srcType.lower()}` / `left{dstId}-{dstType.lower()}`),
-guards against self-loops/duplicate ids, and auto-layouts nodes. Node `*Param`
-semantics come from `../references/workflow-nodes.md`; `save()` runs
-`validate_gptbots_config.py` as the final gate.
+Auto-generates edge handles in the real workflow convention — `source-{srcNodeId}`
+/ `target-{dstNodeId}` (confirmed against a platform export; this is NOT the
+FlowAgent `right{id}-{key}` form) — guards against self-loops/duplicate ids, and
+auto-layouts nodes. Node `*Param` semantics come from `../references/workflow-nodes.md`;
+`save()` runs `validate_gptbots_config.py` as the final gate.
 
 Keep prompts / SQL / code as Python string constants in your generation script
 and regenerate the .flow on every change — the script is the source, the file
 is its build artifact.
 
-CONDITION / INTENT branch edges: pass `source_handle=` explicitly and make it
-equal to the corresponding `conditionBranches[].sourceHandle` /
-`intents[].sourceHandle` — the canvas matches them literally.
+CONDITION / INTENT branch edges: the edge's `source_handle` must equal the
+branch's own `sourceHandle` from `conditionParam.conditionBranches[].sourceHandle`
+/ `intentParam.intents[].sourceHandle` (an arbitrary unique string like
+`source-<nodeId>-<rand>`; mint one with `branch_handle()`). The backend requires
+EVERY branch/intent sourceHandle to have a connected outgoing edge. `target_handle`
+is always `target-{dstNodeId}`.
 
 Example
 -------
@@ -44,6 +48,13 @@ try:
     from gptbots_prompts import load_prompts, load_prompt_store  # noqa: F401
 except ImportError:
     load_prompts = load_prompt_store = None
+
+
+def branch_handle(node_id, suffix):
+    """Mint a CONDITION/INTENT branch sourceHandle: `source-{node_id}-{suffix}`.
+    Use the SAME value in the branch param (conditionBranches[].sourceHandle /
+    intents[].sourceHandle) and in the edge's source_handle."""
+    return f"source-{node_id}-{suffix}"
 
 
 class WorkflowBuilder:
@@ -78,8 +89,8 @@ class WorkflowBuilder:
             "id": edge_id or f"edge_{self._edge_seq}",
             "sourceNodeID": src,
             "targetNodeID": dst,
-            "sourceHandle": source_handle or f"right{src}-{self._by_id[src]['type'].lower()}",
-            "targetHandle": target_handle or f"left{dst}-{self._by_id[dst]['type'].lower()}",
+            "sourceHandle": source_handle or f"source-{src}",
+            "targetHandle": target_handle or f"target-{dst}",
         })
 
     def _auto_layout(self):
@@ -127,10 +138,17 @@ def _demo(outdir):
     w = WorkflowBuilder("Demo Workflow")
     w.node("START", "start", "Start",
            outputs=[{"id": "q", "name": "q", "type": "STRING", "required": True, "desc": "input"}])
+    if_h = branch_handle("cond", "if")     # same value in the branch param AND the edge
+    else_h = branch_handle("cond", "else")
     w.node("CONDITION", "cond", "Status Branch",
            conditionParam={"conditionBranches": [
-               {"type": "IF", "sourceHandle": "rightcond-condition_branch_if_a"},
-               {"type": "ELSE", "sourceHandle": "rightcond-condition_branch_else"}]})
+               {"type": "IF", "priority": 1, "sourceHandle": if_h, "logicOperator": "AND",
+                "conditions": [{"leftOperand": {"source": "NODE", "type": "STRING",
+                                                "value": "start#q#q"},
+                                "operator": "eq",
+                                "rightOperand": {"source": "DIRECT", "type": "STRING", "value": "a"}}]},
+               {"type": "ELSE", "priority": 2, "sourceHandle": else_h, "logicOperator": "AND",
+                "conditions": []}]})
     w.node("TEXT_PROCESS", "tp_a", "Text A",
            textProcessParam={"mode": "JOIN", "joinText": "A:{{q}}"},
            outputs=[{"id": "t", "name": "t", "type": "STRING"}])
@@ -139,12 +157,14 @@ def _demo(outdir):
            outputs=[{"id": "t", "name": "t", "type": "STRING"}])
     w.node("VARIABLE_AGGREGATE", "agg", "Aggregate",
            variableAggregateParam={"strategy": "FIRST_NON_NULL", "groups": [
-               {"name": "r", "variables": []}]},
+               {"groupName": "r", "groupType": "STRING", "variables": [
+                   {"name": "t", "source": "NODE", "type": "STRING", "value": "tp_a#t#t"},
+                   {"name": "t", "source": "NODE", "type": "STRING", "value": "tp_b#t#t"}]}]},
            outputs=[{"id": "r", "name": "r", "type": "STRING"}])
     w.node("END", "end", "End", endParam={"outputType": "TEXT", "outputText": "{{r}}"})
     w.edge("start", "cond")
-    w.edge("cond", "tp_a", source_handle="rightcond-condition_branch_if_a")
-    w.edge("cond", "tp_b", source_handle="rightcond-condition_branch_else")
+    w.edge("cond", "tp_a", source_handle=if_h)     # edge handle == branch sourceHandle
+    w.edge("cond", "tp_b", source_handle=else_h)
     w.edge("tp_a", "agg"); w.edge("tp_b", "agg"); w.edge("agg", "end")
     return w.save(out / "demo-workflow.flow")
 

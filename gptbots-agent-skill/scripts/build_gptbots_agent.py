@@ -13,6 +13,12 @@ blank for backend backfill, and `save()` runs `validate_gptbots_config.py`.
 Keep the prompt as a Python string constant in your generation script and
 regenerate the .bot on every revision.
 
+Field names confirmed against a real platform export — note these gotchas:
+  • the opening line is `firstMessage` (NOT `welcomeMessage`)
+  • the suggested questions are `presetQuestions` (NOT `guidingQuestions`)
+  • `maxRespTokens` should be set (default 4096); `creativityLevel` may be null
+  • `multiModal.multiModalInput` must be present (else the console auto-save NPEs)
+
 Example
 -------
     from build_gptbots_agent import agent_config, save
@@ -20,9 +26,9 @@ Example
     cfg = agent_config(
         "My Support Agent",
         prompt=IDENTITY_PROMPT,                # the field worth most of your effort
-        welcome="Hello! How can I help you today?",
-        guiding_questions=["How do I return an item?", "What are the shipping fees?"],
-        creativity=0.3,
+        first_message="Hello! How can I help you today?",
+        preset_questions=["How do I return an item?", "What are the shipping fees?"],
+        creativity=0.3, max_tokens=4096,
         description="Customer support agent",
         key_event_config={                     # optional; verify against a real export
             "enable": True, "messageThreshold": 10, "idleTimeoutMinutes": 3,
@@ -44,18 +50,27 @@ try:
 except ImportError:
     load_prompts = load_prompt_store = None
 
+DEFAULT_MAX_TOKENS = 4096
 
-def agent_config(name, prompt, welcome=None, guiding_questions=None, creativity=0.3,
-                 bot_type="QuestionAnswer", description="", brief_introduction="",
-                 human_config=None, key_event_config=None, **extra):
+
+def agent_config(name, prompt, first_message=None, preset_questions=None, creativity=0.3,
+                 max_tokens=DEFAULT_MAX_TOKENS, bot_type="QuestionAnswer", description="",
+                 brief_introduction="", human_config=None, key_event_config=None, **extra):
     """Build a QuestionAnswer .bot dict.
 
-    creativity must be in [0, 0.95); model id is left blank (backend backfills —
-    never invent one); plugin auth / cross-org references must stay blank too.
-    Pass any additional documented top-level fields via **extra.
+    Field names match a real platform export: the opening line is `firstMessage`,
+    the suggested questions are `presetQuestions` — using `welcomeMessage` /
+    `guidingQuestions` imports them as nothing.
+
+    creativity must be in [0, 0.95) or None (the platform allows a null
+    creativityLevel); model id is left blank (backend backfills — never invent
+    one); plugin auth / cross-org references must stay blank too. Pass any other
+    documented top-level field (reasoningEffort, modeType, dataEnable+knowledge
+    config, toolsEnable, …) via **extra — copy enum-bearing blocks from a real
+    export rather than guessing.
     """
-    if not (0 <= creativity < 0.95):
-        raise ValueError("creativityLevel must be in [0, 0.95)")
+    if creativity is not None and not (0 <= creativity < 0.95):
+        raise ValueError("creativityLevel must be in [0, 0.95) or None")
     if not (prompt and prompt.strip()):
         raise ValueError("the identity prompt is the highest-leverage field — it must be non-empty")
     cfg = {"formatVersion": "1.0", "exportType": "BOT",
@@ -67,11 +82,12 @@ def agent_config(name, prompt, welcome=None, guiding_questions=None, creativity=
            # auto-save. Empty multiModalInput = non-null VO with null enum fields (safe).
            # Don't guess enum values; override via **extra with a block from a real export.
            "multiModal": {"multiModalInput": {}},
-           "chatModelVersionId": "", "creativityLevel": creativity, "prompt": prompt}
-    if welcome is not None:
-        cfg["welcomeMessage"] = welcome
-    if guiding_questions:
-        cfg["guidingQuestions"] = list(guiding_questions)
+           "chatModelVersionId": "", "creativityLevel": creativity,
+           "maxRespTokens": int(max_tokens), "prompt": prompt}
+    if first_message is not None:
+        cfg["firstMessage"] = first_message          # the opening line (NOT welcomeMessage)
+    if preset_questions:
+        cfg["presetQuestions"] = list(preset_questions)  # suggested questions (NOT guidingQuestions)
     if description:
         cfg["description"] = description
     if brief_introduction:
@@ -101,7 +117,7 @@ def _demo(outdir):
         "Demo Agent",
         prompt="# Role\nYou are a demo support agent.\n# Boundaries\nOnly answer "
                "demo-related questions; when unsure, say so honestly.",
-        welcome="Hello!", guiding_questions=["What is this?"], creativity=0.3)
+        first_message="Hello!", preset_questions=["What is this?"], creativity=0.3)
     return save(cfg, out / "demo-agent.bot")
 
 

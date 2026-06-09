@@ -247,6 +247,16 @@ def check_top_level(cfg, rep):
                     'Add at least "multiModal": {"multiModalInput": {}} (empty object is safe: '
                     "null chatMode is only compared against INTERRUPT). Do NOT guess "
                     "audioMode/chatMode/imageMode enum values — copy them from a real export")
+    # QuestionAnswer field-name gotchas (confirmed against a real export): the opening
+    # line is `firstMessage` and the suggested questions are `presetQuestions`. The
+    # plausible-looking `welcomeMessage` / `guidingQuestions` are dropped on import.
+    if bot_type == "QuestionAnswer":
+        if "welcomeMessage" in cfg and "firstMessage" not in cfg:
+            rep.warn("AGENT_WELCOME_FIELD", "$.welcomeMessage",
+                     "use `firstMessage` for the opening line; `welcomeMessage` is dropped on import")
+        if "guidingQuestions" in cfg and "presetQuestions" not in cfg:
+            rep.warn("AGENT_PRESET_FIELD", "$.guidingQuestions",
+                     "use `presetQuestions` for the suggested questions; `guidingQuestions` is dropped on import")
     return bot_type
 
 
@@ -311,6 +321,7 @@ def check_workflow_graph(workflow, rep, base_path, inner=False):
     out_deg, in_deg = {}, {}
     edge_ids = set()
     adj = {}
+    out_handles = {}   # nodeId -> set of sourceHandle values on its outgoing edges
     for j, edge in enumerate(edges):
         ep = f"{base_path}.workflowEdges[{j}]"
         if not isinstance(edge, dict):
@@ -338,6 +349,8 @@ def check_workflow_graph(workflow, rep, base_path, inner=False):
             out_deg[src] = out_deg.get(src, 0) + 1
             in_deg[tgt] = in_deg.get(tgt, 0) + 1
             adj.setdefault(src, []).append(tgt)
+            if not _is_blank(edge.get("sourceHandle")):
+                out_handles.setdefault(src, set()).add(edge.get("sourceHandle"))
 
     # connectivity / terminal rules
     for n in nodes:
@@ -365,6 +378,27 @@ def check_workflow_graph(workflow, rep, base_path, inner=False):
                 rep.err("WF_NODE_NO_IN", base_path, f"Node is missing an inbound edge: {name}")
             if out_deg.get(nid, 0) == 0 and ntype not in {"BREAK", "CONTINUE", "NEXT_LOOP"}:
                 rep.err("WF_NODE_NO_OUT", base_path, f"Node is missing an outbound edge: {name}")
+        # CONDITION/INTENT: EVERY branch/intent sourceHandle must have a connected edge
+        # (backend WorkflowRuntimeChecker: "must have all branches/intents connected").
+        if ntype == "CONDITION":
+            handles = {b.get("sourceHandle") for b in
+                       ((n.get("conditionParam") or {}).get("conditionBranches") or [])
+                       if isinstance(b, dict) and b.get("sourceHandle")}
+            missing = handles - out_handles.get(nid, set())
+            if missing:
+                rep.err("WF_COND_NOT_CONNECTED", base_path,
+                        f"CONDITION '{name}' has branch(es) with no outgoing edge: {sorted(missing)} "
+                        "— every conditionBranches[].sourceHandle needs a matching edge "
+                        "(edge sourceHandle == branch sourceHandle)")
+        elif ntype == "INTENT":
+            handles = {it.get("sourceHandle") for it in
+                       ((n.get("intentParam") or {}).get("intents") or [])
+                       if isinstance(it, dict) and it.get("sourceHandle")}
+            missing = handles - out_handles.get(nid, set())
+            if missing:
+                rep.err("WF_INTENT_NOT_CONNECTED", base_path,
+                        f"INTENT '{name}' has intent(s) with no outgoing edge: {sorted(missing)} "
+                        "— every intents[].sourceHandle needs a matching edge")
 
     # DAG detection
     if _has_cycle(id_set, adj):
@@ -381,17 +415,36 @@ def check_workflow_graph(workflow, rep, base_path, inner=False):
                 check_workflow_graph(sub, rep, f"{base_path}.workflowNodes[{i}].subWorkflow", inner=True)
 
 
+_VAR_NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+_INTERNAL_HOST_RE = re.compile(
+    r"^(localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|"
+    r"172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|169\.254\.\d+\.\d+|\[?::1\]?)$", re.IGNORECASE)
+
+
+def _url_host(url):
+    m = re.match(r"^[a-zA-Z][a-zA-Z0-9+.\-]*://([^/:?#]+)", str(url or ""))
+    return m.group(1) if m else ""
+
+
 def _check_node_param(node, np, rep):
+    """Per-node parameter checks, mirroring backend WorkflowNodeChecker."""
     ntype = node.get("type")
     required = NODE_REQUIRED_PARAM.get(ntype)
-    if required and node.get(required) is None and ntype not in {"END"}:
+    # END is exempt: inner LOOP/BATCH sub-workflow END nodes legitimately carry a null
+    # endParam in real exports (only the top-level END needs an output config).
+    if required and node.get(required) is None and ntype != "END":
         rep.err("WF_PARAM_MISSING", f"{np}.{required}", f"{ntype} node is missing {required}")
         return
     if ntype == "HTTP":
         http = node.get("httpParam") or {}
         req = http.get("request") or {}
-        if _is_blank(req.get("url")):
+        url = req.get("url")
+        if _is_blank(url):
             rep.err("WF_HTTP_URL", f"{np}.httpParam.request.url", "HTTP node is missing url")
+        elif _INTERNAL_HOST_RE.match(_url_host(url)):
+            rep.err("WF_HTTP_INTERNAL_IP", f"{np}.httpParam.request.url",
+                    f"HTTP node URL cannot use an internal/loopback host: {url}",
+                    "Use a public URL; intranet/loopback addresses are rejected on non-OP deployments")
     elif ntype == "CODE":
         code = node.get("codeParam") or {}
         if _is_blank(code.get("code")):
@@ -414,6 +467,63 @@ def _check_node_param(node, np, rep):
         db = node.get("databaseParam") or {}
         if _is_blank(db.get("sqlQuery")):
             rep.err("WF_DB_SQL", f"{np}.databaseParam.sqlQuery", "DATABASE node is missing sqlQuery")
+    elif ntype == "VARIABLE_AGGREGATE":
+        agg = node.get("variableAggregateParam") or {}
+        if agg.get("strategy") != "FIRST_NON_NULL":
+            rep.err("WF_AGG_STRATEGY", f"{np}.variableAggregateParam.strategy",
+                    f"VARIABLE_AGGREGATE only supports FIRST_NON_NULL (got {agg.get('strategy')!r})")
+        groups = agg.get("groups") or []
+        if not groups:
+            rep.err("WF_AGG_NO_GROUP", f"{np}.variableAggregateParam.groups",
+                    "VARIABLE_AGGREGATE must have at least 1 group")
+        elif len(groups) > 20:
+            rep.err("WF_AGG_GROUPS", f"{np}.variableAggregateParam.groups",
+                    f"too many groups ({len(groups)}; max 20)")
+        for gi, g in enumerate(groups):
+            if not isinstance(g, dict):
+                continue
+            gp = f"{np}.variableAggregateParam.groups[{gi}]"
+            gname, gtype = g.get("groupName"), g.get("groupType")
+            if not (gname and _VAR_NAME_RE.match(str(gname))):
+                rep.err("WF_AGG_GROUP_NAME", gp + ".groupName",
+                        f"group name {gname!r} must match ^[a-zA-Z_][a-zA-Z0-9_]*$")
+            if gtype is None:
+                rep.err("WF_AGG_GROUP_TYPE", gp + ".groupType", "group type is required")
+            gvars = g.get("variables") or []
+            if not gvars:
+                rep.err("WF_AGG_GROUP_VARS", gp + ".variables", "each group needs at least 1 variable")
+            elif len(gvars) > 10:
+                rep.err("WF_AGG_GROUP_VARS", gp + ".variables", f"too many variables ({len(gvars)}; max 10)")
+            for v in gvars:
+                if isinstance(v, dict) and gtype is not None and v.get("type") != gtype:
+                    rep.err("WF_AGG_VAR_TYPE", gp + ".variables",
+                            f"variable {v.get('name')!r} type {v.get('type')!r} must equal group type {gtype!r}")
+    elif ntype in {"LOOP", "BATCH"}:
+        param = node.get("loopParam" if ntype == "LOOP" else "batchParam") or {}
+        seen = set()
+        srcs = (param.get("intermediateVariables") or []) if ntype == "LOOP" else []
+        for v in list(srcs) + list(param.get("inputArrays") or []):
+            if isinstance(v, dict):
+                nm = v.get("name")
+                if nm == "index":
+                    rep.err("WF_LOOP_INDEX_NAME", f"{np}.{ntype.lower()}Param",
+                            f"{ntype} variable name cannot be 'index' (reserved)")
+                elif nm in seen:
+                    rep.err("WF_LOOP_DUP_NAME", f"{np}.{ntype.lower()}Param",
+                            f"duplicate {ntype} variable name {nm!r}")
+                else:
+                    seen.add(nm)
+        # (subWorkflow presence + recursion handled at graph level in check_workflow_graph)
+    elif ntype == "SET_INTERMEDIATE_VARIABLE":
+        sp = node.get("setIntermediateVariableParam") or {}
+        assigns = sp.get("assignments") or []
+        if not assigns:
+            rep.err("WF_SIV_NO_ASSIGN", f"{np}.setIntermediateVariableParam.assignments",
+                    "SET_INTERMEDIATE_VARIABLE must have at least one assignment")
+        for ai, a in enumerate(assigns):
+            if isinstance(a, dict) and a.get("leftValue") is None:
+                rep.err("WF_SIV_LEFT", f"{np}.setIntermediateVariableParam.assignments[{ai}].leftValue",
+                        "assignment leftValue cannot be null")
 
 
 def _has_cycle(id_set, adj):

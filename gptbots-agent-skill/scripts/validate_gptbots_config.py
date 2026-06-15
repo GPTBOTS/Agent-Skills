@@ -588,22 +588,31 @@ def _check_component_enums(c, cp, rep):
                     mpath = f"{cp}.{fld}[{i}]"
                     _check_enum(m.get("type"), PROMPT_MESSAGE_TYPES, "COMP_ENUM_MESSAGE_TYPE", mpath + ".type", rep, "message type")
                     _check_single_brace_vars(m.get("text"), mpath + ".text", rep)
-                    # The prompt text lives in `text`. A `content` key here is the wrong
-                    # schema (that's the Message/Predefine reply field) — on import the
-                    # prompt deserializes BLANK, silently breaking the node.
-                    if "content" in m and "text" not in m:
-                        rep.err("MSG_CONTENT_FIELD", mpath + ".content",
-                                "prompt message uses `content`; the field must be `text` "
-                                "(a `content` key here imports as a BLANK prompt)",
-                                'Rename "content" to "text"')
-                    # An empty Role message = blank identity prompt (the node has no instructions).
-                    if m.get("type") == "Role":
-                        rtext = m.get("text") if "text" in m else m.get("content")
-                        if not (rtext and str(rtext).strip()):
-                            rep.err("MSG_ROLE_EMPTY", mpath + ".text",
-                                    f"the Role (identity prompt) of {c.get('type')} #{c.get('id')} is empty "
-                                    "— the node will run with no instructions",
-                                    "Provide a non-empty identity prompt in the Role message's `text`")
+                    # The importer rebuilds the prompt editor ONLY from the canonical
+                    # PromptMessage object {lineId,type,text,ids,upstream,children,datasetType}
+                    # with the body in `text`. A message that carries the body in stray keys
+                    # (content/value/prompt) — what a hand-rolled generator often emits — is
+                    # NOT read, so the node imports with a BLANK Identity/System prompt even
+                    # though those keys look populated. Flag any stray body key.
+                    stray = [k for k in ("content", "value", "prompt") if k in m]
+                    if stray:
+                        body_in_stray = any(m.get(k) and str(m[k]).strip() for k in stray)
+                        if body_in_stray and not (m.get("text") and str(m["text"]).strip()):
+                            rep.err("MSG_NONCANONICAL", mpath,
+                                    f"prompt message body is in {stray} but not in `text` — the importer "
+                                    "reads only `text`, so this imports as a BLANK prompt",
+                                    "Put the body in `text` and use the canonical PromptMessage "
+                                    "shape {lineId,type,text,ids,upstream,children,datasetType} (builder _msg)")
+                        else:
+                            rep.warn("MSG_NONCANONICAL", mpath,
+                                     f"prompt message has non-schema key(s) {stray}; real exports use only "
+                                     "`text`. Stray keys signal a non-canonical message that may import blank",
+                                     "Emit the canonical PromptMessage object (builder _msg/role)")
+                    if m.get("type") == "Role" and not (m.get("text") and str(m["text"]).strip()):
+                        rep.err("MSG_ROLE_EMPTY", mpath,
+                                f"the Role (identity prompt) of {c.get('type')} #{c.get('id')} has no `text` "
+                                "— the node imports with no instructions (the prompt body must be in `text`)",
+                                "Provide a non-empty identity prompt in the Role message's `text`")
     # gather fields (ChatGather / FormGather)
     gfs = c.get("gatherFields")
     if isinstance(gfs, list):

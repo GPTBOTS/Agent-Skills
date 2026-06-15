@@ -93,11 +93,15 @@ DEFAULT_AGENT_LOGO = "/developer/static/images/avatar/default_avatar_20250613161
 # ---------------------------------------------------------------------------
 # message / config factories (shapes verified against real platform exports)
 # ---------------------------------------------------------------------------
-# A FlowAgent prompt message is this exact object — the text lives in `text`
-# (NOT `content`: a `content` key is silently ignored on import and the prompt
-# imports BLANK). An LLM-capable node's `messages` is the standard array
-# [Role, LongMemory, ShortMemory, Plugin, (Condition for Condition nodes), Input];
-# build() assembles it and backfills the Input message's `upstream`.
+# A FlowAgent prompt message MUST be this exact canonical object (7 keys), with the
+# body in `text` — verified against real platform exports. The importer rebuilds the
+# prompt editor only from this canonical shape; a message with stray keys
+# (content/value/prompt) and/or missing the structural keys (lineId/ids/upstream/
+# children/datasetType) is NOT read → the node imports with a BLANK Identity/System
+# prompt even though `text` is populated. So: body in `text` only, never content/value/
+# prompt, and always emit all 7 keys. An LLM-capable node's `messages` is the full
+# ordered array [Role, LongMemory, ShortMemory, Plugin, (Condition), Input]; build()
+# assembles it and backfills the Input message's `upstream`.
 def _msg(mtype, text="", upstream=None):
     return {"lineId": None, "type": mtype, "text": text, "ids": [],
             "upstream": upstream, "children": None, "datasetType": None}

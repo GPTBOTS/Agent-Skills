@@ -290,15 +290,14 @@ Reference with `{{...}}` in fields, **only variables upstream on the path**. In 
 **Common to every component:** `type` (FlowComponentType), `id` (unique integer), `name`, `title`,
 `x`, `y` (canvas coordinates — see Connections & handles), `nextComponents[]` (outgoing edges).
 
-### PromptMessage object shape (LLM-capable nodes) — `text`, never `content`
+### PromptMessage object shape (LLM-capable nodes) — canonical 7 keys, body in `text`
 
-Every entry of a node's `messages[]` (and `datasetMessages[]`) is exactly:
+Every entry of a node's `messages[]` (and `datasetMessages[]`) must be **exactly** this canonical
+object (verified across real exports of LLM / Classifier(Branch) / Condition / ChatGather nodes):
 ```json
 {"lineId": null, "type": "Role", "text": "…the prompt…", "ids": [], "upstream": null, "children": null, "datasetType": null}
 ```
-The prompt text lives in **`text`**. ⚠️ A `content` key here is the **wrong field** (that's the
-reply field of `Message`/`Predefine` nodes) — on import the prompt **deserializes BLANK** and the
-node silently runs with no instructions. The standard array is, in order:
+⚠️ **All LLM-driven node types store the identity/system prompt in the SAME place: `messages[].Role.text`** (top-level `content`/`prompt` on the component are empty). The importer rebuilds the prompt editor **only** from this canonical shape. A message that puts the body in stray keys (`content`/`value`/`prompt`) and/or omits the structural keys (`lineId`/`ids`/`upstream`/`children`/`datasetType`), or a truncated array, is **not read** — the node imports with a **BLANK Identity/System prompt even though those keys look populated**. (This is the real cause of "imported but prompt empty" — not a per-node-type field difference, and writing the body into four keys does NOT fix it.) The builder's `role()`/`_msg` emit the canonical object; the validator errors on a Role with no `text` (`MSG_ROLE_EMPTY`) and on a body in stray keys (`MSG_NONCANONICAL`). The standard array is, in order:
 `[Role, LongMemory, ShortMemory, Plugin, Input]` — plus a `Condition` entry (the If-text) right
 before `Input` on `Condition` nodes. `LongMemory`/`ShortMemory`/`Plugin` are present with empty
 `text`. The trailing **`Input`** message's `upstream` = the id of the node feeding this one, with a

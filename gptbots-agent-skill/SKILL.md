@@ -1,9 +1,9 @@
 ---
 name: gptbots-agent-skill
-description: Create, read, update, and optimize GPTBots (https://www.gptbots.ai) Agent and Workflow configurations (.bot / .flow files), drive published Agents/Workflows via the GPTBots Open API, and organize raw documents (PDF, Word, Excel, web, FAQ) into import-ready knowledge-base files. Use this skill whenever the user mentions GPTBots, provides or references a .bot or .flow file, wants to build/optimize a chatbot Agent, FlowAgent, or Workflow, wants API-based evaluation, quality assessment, RAG testing, scheduled triggering, or knowledge-base/data management, or wants to clean up / restructure / curate / organize / optimize knowledge-base documents into Markdown / table / Q&A formats and tune chunking, metadata & retrieval — even if they just say "optimize my bot config" with an attached .bot/.flow file.
+description: Create, read, update, and optimize GPTBots (https://www.gptbots.ai) Agent and Workflow configurations (.bot / .flow files), import & publish them to a test-mode target via the GPTBots API, drive published Agents/Workflows via the GPTBots Open API, and organize raw documents (PDF, Word, Excel, web, FAQ) into import-ready knowledge-base files. Use this skill whenever the user mentions GPTBots, provides or references a .bot or .flow file, wants to build/optimize a chatbot Agent, FlowAgent, or Workflow, wants to import/update/publish a config to a test-mode Agent/Workflow, wants API-based evaluation, quality assessment, RAG testing, scheduled triggering, or knowledge-base/data management, or wants to clean up / restructure / curate / organize / optimize knowledge-base documents into Markdown / table / Q&A formats and tune chunking, metadata & retrieval — even if they just say "optimize my bot config" with an attached .bot/.flow file.
 license: MIT
 metadata:
-  version: 1.14.1
+  version: 1.15.0
   generatedBy: gptbots-agent-skill
 ---
 
@@ -14,6 +14,7 @@ A platform-level skill for working with **GPTBots** (https://www.gptbots.ai) Age
 Use this skill to:
 - **Read / update / optimize** an Agent or Workflow config from a **user-provided `.bot` or `.flow` file**.
 - **Create a new** Agent or Workflow from scratch (scenario + requirements → importable `.bot` / `.flow`).
+- **Import & publish** a generated `.bot`/`.flow` to a **test-mode** Agent/Workflow via API (update the current version, optionally release it live) — see `references/test-mode-update-publish.md`.
 - **Drive** a published Agent/Workflow via the public Open API for evaluation, quality assessment, RAG testing, scheduled triggering, and data/knowledge-base management.
 - **Organize** raw documents into import-ready knowledge-base files (Document / Table / Q&A) and advise on chunking, metadata, and retrieval tuning.
 
@@ -26,6 +27,7 @@ references/                   # how-to specs (read the one matching the task)
   create-gptbots-flowagent.md     # FlowAgent (botType=Flow) → .bot
   create-gptbots-workflow.md      # Workflow → .flow
   call-gptbots-api.md             # drive an Agent/Workflow via the public API
+  test-mode-update-publish.md     # import a .bot/.flow into a test-mode target & publish via API
   organize-knowledge-base.md      # curate raw docs → import-ready Markdown / table / Q&A files
   variables-reference.md / materials-mapping.md / workflow-nodes.md / flowagent-components.md
 scripts/
@@ -35,6 +37,7 @@ scripts/
   build_gptbots_flowagent.py    # builder: FlowAgent .bot (ids/handles/layout + message/memory/key-event helpers)
   build_gptbots_workflow.py     # builder: Workflow .flow
   gptbots_prompts.py            # load_prompts() — node prompts from prompts.md, a prompts/ folder, or .json
+  publish_gptbots.py            # validate → import → (optional) release a .bot/.flow to a test-mode target via API
 ```
 
 ## Generate via the builder scripts (one per target type)
@@ -100,7 +103,9 @@ On a non-zero exit code, fix the JSON per the reported `path`/`fix`, rerun, and 
 
 ## Delivery
 1. Place the new/updated `.bot` / `.flow` file (and `overview.md` with its mermaid diagram, for Workflow/FlowAgent) in the current working directory, and return their local paths. Never overwrite the user's original file unless they explicitly ask — deliver an updated copy alongside it.
-2. Tell the user: on **www.gptbots.ai** (developer space), **Create Agent / Workflow → Import**, then select the file.
+2. Tell the user one of two ways to apply it:
+   - **Manual:** on **www.gptbots.ai** (developer space), **Create Agent / Workflow → Import**, then select the file.
+   - **API (test-mode target):** if the target Agent/Workflow was created in **test mode**, run `scripts/publish_gptbots.py <file> --api-key <target key>` to import it directly (add `--release` to publish it live). It validates first, calls the import endpoint, and optionally releases the version. See `references/test-mode-update-publish.md`. **Only pass `--release` when the user explicitly wants to go live** (it's a live, side-effectful publish); without it, the version is saved for review.
 
 ## API
 - Docs (authoritative): https://www.gptbots.ai/docs/api-reference/overview

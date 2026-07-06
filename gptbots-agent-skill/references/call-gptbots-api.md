@@ -27,8 +27,9 @@ Returns the entity type (agent/workflow) and id; confirm the key is valid before
 |---|---|---|---|
 | [Create Conversation ID](https://www.gptbots.ai/docs/api-reference/conversation-api/create-conversation) | POST | `/v1/conversation` | Create a `conversation_id` for multi-turn chat (binds user attributes + memory). |
 | [Send Message](https://www.gptbots.ai/docs/api-reference/conversation-api/send-message-v2) | POST | `/v2/conversation/message` | Send a message and get the Agent reply; supports text/image/audio/document; `response_mode` `blocking` or `streaming`. |
-| [Get Conversation List](https://www.gptbots.ai/docs/api-reference/conversation-api/get-conversation-list) | GET | `/v1/bot/conversation/page` | Paginated list of an Agent's conversations (ids, times, message counts, credits). |
-| [Get Conversation Detail](https://www.gptbots.ai/docs/api-reference/conversation-api/get-conversation-detail) | GET | `/v2/messages` | All message details within a conversation, by `conversation_id`. |
+| [Get Conversation List](https://www.gptbots.ai/docs/api-reference/conversation-api/get-conversation-list) | GET | `/v1/bot/conversation/page` | Paginated list of an Agent's conversations (ids, `user_id`, `anonymous_id`, times, message counts, credits); filter by `user_id` + time range. |
+| [Get Conversation Detail](https://www.gptbots.ai/docs/api-reference/conversation-api/get-conversation-detail) | GET | `/v2/messages` | All message details within a conversation, by `conversation_id` (each item carries a `message_id`). |
+| [Query LogTree](https://www.gptbots.ai/docs/api-reference/conversation-api/query-logtree) | GET | `/v1/bot/logtree/query` | Full execution trace (node tree + timing/token/status summary) for one reply, by `msgid`. **Primary ops-diagnostics endpoint.** |
 | [Get Referenced Knowledge](https://www.gptbots.ai/docs/api-reference/conversation-api/get-correlated-dataset) | GET | `/v1/correlate/dataset` | Knowledge chunks referenced in a reply (content, source URL, relevance scores). |
 | [Generate Suggested Questions](https://www.gptbots.ai/docs/api-reference/conversation-api/suggested-questions) | GET | `/v1/next/question` | Suggested follow-up questions for a reply. |
 | [Agent Response Feedback](https://www.gptbots.ai/docs/api-reference/conversation-api/bot-response-feedback) | POST | `/v1/message/feedback` | Submit user feedback (positive/negative/canceled) on a reply. |
@@ -39,6 +40,7 @@ Returns the entity type (agent/workflow) and id; confirm the key is valid before
 ### Knowledge API
 | Name | Method | Path | Description |
 |---|---|---|---|
+| [Create Knowledge Base](https://www.gptbots.ai/docs/api-reference/knowledge-base-api/create-knowledge-base) | POST | `/v1/bot/knowledge/base/create` | Create a new knowledge base for the API key's Agent (`name`+`desc` required; optional knowledge-graph + access-control) → `knowledge_base_id`. |
 | [Get Knowledge Base List](https://www.gptbots.ai/docs/api-reference/knowledge-base-api/get-knowledge-base-list) | GET | `/v1/bot/knowledge/base/page` | Paginated list of the Agent's knowledge bases (doc/chunk counts, token usage). |
 | [Get Doc List](https://www.gptbots.ai/docs/api-reference/knowledge-base-api/get-knowledge-doc-list) | GET | `/v1/bot/doc/query/page` | Paginated list of documents within a knowledge base. |
 | [Add Text Docs](https://www.gptbots.ai/docs/api-reference/knowledge-base-api/add-knowledge-doc) | POST | `/v1/bot/doc/text/add` | Batch upload text docs (chunked, embedded, stored → new doc IDs). |
@@ -223,6 +225,41 @@ curl -X POST 'https://api-${endpoint}.gptbots.ai/v1/workflow/invoke' \
     ]
 }'
 ```
+### Create a knowledge base
+Guided flow (use the helper script — don't hand-roll the curl):
+1. **Confirm the inputs.** `name` and `desc` are **required**. Ask whether to enable the knowledge graph (`graph_enable`, for entity/relationship-rich knowledge that needs multi-hop recall) and access control (`access_control_enabled`, role/doc-level permission filtering) — both default off. `kg_ner_extraction_user_prompt` overrides the triple-extraction prompt and only applies when `graph_enable` is true.
+2. **Create it** on the Agent bound to the API key:
+   ```
+   GPTBOTS_API_KEY=KEY python3 scripts/create_knowledge_base.py \
+     --name "Product KB" --desc "Product manuals, FAQ and business material" \
+     [--endpoint sg|jp|th] [--graph-enable] [--access-control] [--ner-prompt-file p.txt]
+   ```
+   It prints the new `knowledge_base_id` (add `--quiet` to print only the id for scripting).
+3. **Populate it.** Use that id as the `knowledge_base_id`/`group_id` target for the doc-add endpoints (`/v1/bot/doc/text/add`, `/v1/bot/doc/qa/add`, `/v1/bot/doc/spreadsheet/add`, …). Curate the source files first — see `references/organize-knowledge-base.md`.
+
+Underlying call (what the script sends): `POST /v1/bot/knowledge/base/create`
+```
+curl -X POST 'https://api-${endpoint}.gptbots.ai/v1/bot/knowledge/base/create' \
+-H 'Authorization: Bearer ${API Key}' \
+-H 'Content-Type: application/json' \
+-d '{
+    "name": "Product KB",
+    "desc": "Product manuals, FAQ and business material",
+    "graph_enable": false,
+    "access_control_enabled": false
+}'
+# → { "knowledge_base_id": "6a475ee61d276b3d062a1bcb" }
+```
+
+### Query LogTree (execution trace of one reply)
+- `GET /v1/bot/logtree/query?msgid=<message_id>` returns the full node-level trace for a single reply. `msgid` is the `message_id` from `GET /v2/messages` (or the `message_id` returned by the send-message call).
+```
+curl -X GET 'https://api-${endpoint}.gptbots.ai/v1/bot/logtree/query?msgid=6a475fa11d276b3d062a1be8' \
+-H 'Authorization: Bearer ${API Key}'
+```
+- Response shape: `treeData[]` (a recursive node tree; each node has `logComponentName`/`logComponentType`, `actionName`, `runningStatus` ∈ `SUCCESS`/`FAILED`/`RUNNING`, `input`, `output`, `latencyMillis`, `inputTokens`/`outputTokens`, `children`), plus a `summary` (`runningStatus`, `totalLatencyMillis`, `totalTokens`, `stepCount`, `credit`), and top-level `msgId` / `conversationId` / `traceId`. `treeData`/`summary` may be `null` when no trace exists for the message.
+- Read it to see exactly which components ran, in what order, what each received and returned, where a failure or latency/token spike occurred, and how a Classifier/Condition actually routed — the ground truth for diagnosing a bad reply.
+
 > For all other endpoints (data queries, knowledge base, database, analytics…) see the **API catalog** above.
 
 ## Playbook: scheduled-task triggering
@@ -243,9 +280,33 @@ The public API has *no dedicated batch-evaluation endpoint*; orchestrate via the
 - Usage/credits: `GET /v1/account/bill/page`, `/v1/account/bill/total` (require `start_time`/`end_time`, epoch ms).
 
 ## Playbook: knowledge base management
+- Create a KB: `scripts/create_knowledge_base.py --name … --desc …` (wraps `POST /v1/bot/knowledge/base/create`, `name`+`desc` required) → `knowledge_base_id`; then fill it via the doc-add endpoints below. See the *Create a knowledge base* guided flow above.
 - List knowledge bases/documents: `GET /v1/bot/knowledge/base/page`, `GET /v1/bot/doc/query/page`.
 - Add: `POST /v1/bot/doc/text/add`, `/v1/bot/data/file/upload`, `/v1/bot/doc/qa/add`; chunked `POST /v1/bot/doc/chunks/add` (≤50 keywords per chunk).
 - Update/delete: `PUT /v1/bot/doc/text/update`, `DELETE /v1/bot/doc/batch/delete`.
+
+## Playbook: Agent ops diagnostics — trace a conversation via LogTree
+The user reports a bad/slow/failed reply and gives you a **user ID, anonymous ID, or conversation ID**; drill down to the failing component. This is the core loop for an ops/运维 Agent.
+
+**Step 1 — locate the conversation (skip if you already have `conversation_id`).**
+- Given a **user ID**: `GET /v1/bot/conversation/page?conversation_type=ALL&user_id=<id>&start_time=<ms>&end_time=<ms>&page=1&page_size=100`. Each row has `conversation_id`, `subject`, `recent_chat_time`, `message_count` — pick the conversation in question (usually most recent, or matched by `subject`/time).
+- Given an **anonymous ID**: the list endpoint filters only by `user_id`, so page the same list over the time window and match rows client-side on the `anonymous_id` field. (Optionally resolve it first with `GET /v1/user/get-user-cdp`, which returns the user/anonymous IDs and conversation type.)
+- `conversation_type`/`start_time`/`end_time` (epoch **ms**) are required — default to a wide window if the user gives none.
+
+**Step 2 — enumerate the messages.** `GET /v2/messages?conversation_id=<id>&page=1&page_size=100`. Walk `conversation_content[]`; collect each `message_id`. The **assistant** turns (`role: "assistant"`) are the ones whose execution you trace; use `parent_message_id` to tie a reply back to the user message that triggered it, and `from_component_branch` to see which flow branch produced each content block.
+
+**Step 3 — pull the trace for each suspect message.** `GET /v1/bot/logtree/query?msgid=<message_id>`. Focus on the message(s) the user flagged, or scan them all when the fault is unknown.
+
+**Step 4 — analyze the trace.** In `treeData` (walk `children` recursively) and `summary`, look for:
+- **Failures** — any node with `runningStatus: "FAILED"` (or `RUNNING` that never completed); read its `input`/`output` and `extension` for the error.
+- **Wrong routing** — at a Classifier/Condition node, compare the chosen branch against the user's actual intent; a misroute here explains most "answered the wrong thing" reports.
+- **Empty/garbled output** — a node whose `output` is blank or malformed (e.g. an LLM node that returned nothing, a tool/plugin node that errored) pinpoints where the answer degraded.
+- **Latency / cost spikes** — sort nodes by `latencyMillis`, and check `summary.totalLatencyMillis` / `totalTokens` / `credit` / `stepCount` to attribute slow or expensive replies to a specific component.
+- **RAG issues** — inspect the knowledge/retrieval node's `output` for whether relevant chunks were retrieved; cross-check with `GET /v1/correlate/dataset` for the referenced knowledge.
+
+**Step 5 — report.** Summarize the failing node (component name/type + status), the concrete symptom (error / misroute / empty output / latency), and a fix aimed at the config (a Classifier branch rule, an LLM prompt, a plugin/tool config, or a knowledge-base gap) — which loops back to the optimize-config workflow in the matching `references/create-gptbots-*.md`.
+
+> Automate steps 1–4 with a small bash/curl or Python script over the message list; the API is public `/v1`·`/v2` only, so no console access is needed.
 
 ## Constraints
 - Public `/v1`·`/v2` API only; for capabilities that require console/internal, clearly tell the user that the capability is currently outside the scope of the public API, and do not fabricate endpoints.

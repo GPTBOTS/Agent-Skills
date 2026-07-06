@@ -1,9 +1,9 @@
 ---
 name: gptbots-agent-skill
-description: Create, read, update, and optimize GPTBots (https://www.gptbots.ai) Agent and Workflow configurations (.bot / .flow files), import & publish them to a test-mode target via the GPTBots API, drive published Agents/Workflows via the GPTBots Open API, and organize raw documents (PDF, Word, Excel, web, FAQ) into import-ready knowledge-base files. Use this skill whenever the user mentions GPTBots, provides or references a .bot or .flow file, wants to build/optimize a chatbot Agent, FlowAgent, or Workflow, wants to import/update/publish a config to a test-mode Agent/Workflow, wants API-based evaluation, quality assessment, RAG testing, scheduled triggering, or knowledge-base/data management, or wants to clean up / restructure / curate / organize / optimize knowledge-base documents into Markdown / table / Q&A formats and tune chunking, metadata & retrieval — even if they just say "optimize my bot config" with an attached .bot/.flow file.
+description: Create, read, update, and optimize GPTBots (https://www.gptbots.ai) Agent, FlowAgent, and Workflow configs (.bot / .flow), import & publish them to a test-mode target via API, drive published Agents/Workflows via the Open API (evaluation, RAG testing, scheduled triggering, data & knowledge-base management), diagnose live conversations via message-level LogTree traces, create knowledge bases, and curate raw documents (PDF, Word, Excel, web, FAQ) into import-ready knowledge files. Use whenever the user mentions GPTBots or a .bot/.flow file, or wants to build/optimize/publish/evaluate a GPTBots Agent, FlowAgent, or Workflow, run ops diagnostics on a conversation, create or manage a knowledge base, or organize knowledge-base documents.
 license: MIT
 metadata:
-  version: 1.15.0
+  version: 1.17.0
   generatedBy: gptbots-agent-skill
 ---
 
@@ -38,6 +38,7 @@ scripts/
   build_gptbots_workflow.py     # builder: Workflow .flow
   gptbots_prompts.py            # load_prompts() — node prompts from prompts.md, a prompts/ folder, or .json
   publish_gptbots.py            # validate → import → (optional) release a .bot/.flow to a test-mode target via API
+  create_knowledge_base.py      # create a knowledge base via API → prints knowledge_base_id
 ```
 
 ## Generate via the builder scripts (one per target type)
@@ -68,9 +69,15 @@ Follow the reference matching the target type, then quality-check and deliver:
 - Workflow → `references/create-gptbots-workflow.md`
 
 ### C. Drive a published Agent/Workflow via the API
-For evaluation / quality assessment / RAG testing / scheduled triggering / data & knowledge-base management, follow `references/call-gptbots-api.md` (public Open API only).
+For evaluation / quality assessment / RAG testing / scheduled triggering / data & knowledge-base management (including **creating a knowledge base** via `POST /v1/bot/knowledge/base/create`), follow `references/call-gptbots-api.md` (public Open API only).
 
-### D. Organize / curate knowledge-base source documents
+### C2. Ops diagnostics — trace a live conversation to find the failing component
+When the user reports a bad / slow / failed reply and gives a **user ID, anonymous ID, or conversation ID**, follow the *Agent ops diagnostics* playbook in `references/call-gptbots-api.md`: locate the conversation (`GET /v1/bot/conversation/page`), enumerate its messages (`GET /v2/messages` → each `message_id`), pull the per-message execution trace (`GET /v1/bot/logtree/query?msgid=…`), and read the `treeData`/`summary` to pinpoint the failed node, misrouted Classifier, empty output, or latency/token spike — then loop back to the optimize-config workflow (A) to fix it.
+
+### D. Create a knowledge base
+When the user wants a **new knowledge base**, create it via the API with `scripts/create_knowledge_base.py --name … --desc …` (POST `/v1/bot/knowledge/base/create` on the Agent bound to the API key) — it prints the new `knowledge_base_id`. Confirm the name/description and whether to enable the knowledge graph (`--graph-enable`) or access control (`--access-control`) first. Then populate it: curate the source material into import-ready files (workflow E) and add them with the doc-add endpoints, targeting the returned id. Full guidance: the *Create a knowledge base* section and *knowledge base management* playbook in `references/call-gptbots-api.md`.
+
+### E. Organize / curate knowledge-base source documents
 When the user wants to turn raw/messy material (PDF, Word, Excel, web export, FAQ, notes) into clean, import-ready knowledge-base files — and tune chunking / metadata / retrieval — follow `references/organize-knowledge-base.md`. It maps content to the platform's three storage formats (Document → `.md`, Table → `.csv`/`.xlsx`, Q&A → `question,answer` CSV), enforces the curation disciplines (process every row, merge duplicates, preserve original wording & images, put conflicts in a separate table), and self-checks with `scripts/validate_knowledge_files.py`.
 
 ## Prompt quality for LLM-capable nodes (critical)

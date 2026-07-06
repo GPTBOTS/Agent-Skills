@@ -128,6 +128,10 @@ recall to a smaller, more relevant set:
 3. Tell the user how to import: GPTBots developer space → the Agent → **Knowledge base → Add**,
    then choose the matching type (Document / Table / Q&A); for a Table, select the header row
    (`R1`/`R2`/`R3`) in the dialog. Then advise chunking / metadata / hit-testing per above.
+   (To create the target knowledge base itself via API instead of the console, run
+   `scripts/create_knowledge_base.py --name … --desc …` → `knowledge_base_id`, then add these
+   files with the doc-add endpoints — see the *Create a knowledge base* flow in
+   `references/call-gptbots-api.md`.)
 4. Surface any judgement calls (conflicts, dropped duplicates) for the user to confirm.
 
 ## Common mistakes

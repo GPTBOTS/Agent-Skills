@@ -723,6 +723,31 @@ def _check_component_edges(c, cp, comp_type_by_id, rep):
             rep.err("CONDITION_EDGE_NAME", cp + ".nextComponents",
                     f"Condition #{owner_id} conditions_false edge name must be \"_false\" "
                     f"(got {false_e.get('name')!r})", 'Set name="_false"')
+    # A Variable (assignment) node's success outlet is `variable_true` (edge
+    # name="_true") — NOT the bare `variable` handle. The platform's "assignment
+    # successful" port is keyed `variable_true`, so a plain `right{id}-variable`
+    # edge does not anchor to that port: the canvas draws a detached/floating line
+    # and the port greys out (identical failure to a Condition true-edge missing
+    # its `_true`). The `_parse_handle` key drops the `_true`/`_exception` suffix,
+    # so EDGE_SOURCE_KEY cannot catch this — check the raw suffix here.
+    if owner_type == "Variable":
+        edges = [nx for nx in (c.get("nextComponents") or []) if isinstance(nx, dict)]
+        for nx in edges:
+            sh = str(nx.get("sourceHandle") or "")
+            # the bare success handle: ends with "-variable" and carries no suffix
+            if sh == f"right{owner_id}-variable" or (sh.endswith("-variable") and "_" not in sh.rsplit("-", 1)[-1]):
+                rep.err("VAR_SUCCESS_HANDLE", cp + ".nextComponents",
+                        f"Variable #{owner_id} success edge uses the bare handle "
+                        f"'{sh}' — the 'assignment successful' port is keyed "
+                        "'variable_true', so this edge does not anchor to it and the "
+                        "canvas draws a floating/greyed line",
+                        f"Use sourceHandle 'right{owner_id}-variable_true' with name "
+                        '"_true" (connect(var, dst) / connect(var, dst, suffix="true") '
+                        "in the builder now emits this automatically)")
+            elif sh.endswith("-variable_true") and nx.get("name") != "_true":
+                rep.err("VAR_SUCCESS_HANDLE", cp + ".nextComponents",
+                        f"Variable #{owner_id} variable_true edge name must be "
+                        f"\"_true\" (got {nx.get('name')!r})", 'Set name="_true"')
     for k, nx in enumerate(c.get("nextComponents") or []):
         if not isinstance(nx, dict):
             continue
@@ -768,11 +793,19 @@ def _check_component_edges(c, cp, comp_type_by_id, rep):
                     suffix = sh.split("-", 1)[1] if "-" in sh else ""
                     suffix = suffix[len(skey) + 1:] if suffix.startswith(skey + "_") else ""
                     if suffix == "exception":
-                        rep.err("BRANCH_EXCEPTION_EDGE", ep + ".sourceHandle",
-                                "Classifier has no branch_exception edge — its exception is "
-                                "governed by the exceptionSwitch toggle (a system-preset row), "
-                                "not an authored edge",
-                                "Remove this edge; set exceptionSwitch=true on the classifier instead")
+                        # A wired classifier exception branch IS supported: real
+                        # platform exports contain right{id}-branch_exception (name
+                        # "_exception") routing to a fallback node, structurally
+                        # identical to the LLM/Condition wired exception, with the
+                        # classifier's exceptionSwitch=True. It is only inconsistent
+                        # when the edge exists but the exception mechanism is off.
+                        if not c.get("exceptionSwitch"):
+                            rep.warn("BRANCH_EXCEPTION_EDGE", ep + ".sourceHandle",
+                                     "Classifier has a wired branch_exception edge but "
+                                     "exceptionSwitch is not enabled — the exception "
+                                     "branch only fires when the exception mechanism is "
+                                     "on. Set exceptionSwitch=true, or remove the edge "
+                                     "if you don't want a wired exception fallback")
                     elif suffix == "other":
                         # The built-in Other edge must be name="_other" + condition=""
                         # (empty string, not null). name=null makes the platform render
@@ -879,37 +912,29 @@ def check_flow(flow_rule, rep):
         cp = f"$.flowRule.components[{i}]"
         ctype = c.get("type")
         nexts = c.get("nextComponents") or []
-        # Duplicate-line detection: platform imports have been observed duplicating exception
-        # edges (an old `Exception` entry with condition=null + a new `_exception` entry, same
-        # id / sourceHandle). Harmless to the engine (nextComponents is pass-through, no toMap)
-        # but it is dirty data and renders doubled lines — flag same (sourceHandle, target).
+        # Fan-out is legal: an output port MAY drive several edges to DIFFERENT targets
+        # ("Multi-out / fan-out: each branch (output) can connect to multiple parallel
+        # downstream nodes" — Connection rules). So a repeated sourceHandle alone is NOT
+        # an error. The genuine import artifact is a *duplicate edge* — the SAME
+        # (sourceHandle → target) appearing twice (e.g. an old `Exception`/`name=null`
+        # entry plus a new `_exception` one on the same port to the same node). That is
+        # dirty data (harmless to the engine — nextComponents is pass-through, no toMap —
+        # but it renders a doubled line and can grey the port). Flag only that.
         line_seen = set()
-        handle_seen = set()
         for k, nx in enumerate(nexts):
             if not isinstance(nx, dict):
                 continue
-            # Each output handle drives a single edge. A repeated sourceHandle on the
-            # same component is a duplicate outlet (the classic import artifact: an old
-            # `Exception`/`name=null` edge plus a new `_exception` one on the same
-            # conditions_exception/branch port). These duplicates corrupt the node —
-            # e.g. the Condition's IF port renders greyed/unusable — so this is an error,
-            # not just a doubled line.
-            shandle = nx.get("sourceHandle")
-            if shandle is not None:
-                if shandle in handle_seen:
-                    rep.err("EDGE_DUP_HANDLE", f"{cp}.nextComponents[{k}].sourceHandle",
-                            f"Duplicate sourceHandle {shandle!r} on component #{c.get('id')} — "
-                            "an output port may have only one edge; duplicates (often leftover "
-                            "Exception/_exception import artifacts) corrupt the node and grey out ports",
-                            "Keep exactly one edge per handle; delete the duplicates")
-                handle_seen.add(shandle)
             line = (nx.get("sourceHandle"), nx.get("nextComponentId"))
             if line[0] is not None and line[1] is not None:
                 if line in line_seen:
-                    rep.warn("EDGE_DUP_LINE", f"{cp}.nextComponents[{k}]",
-                             f"Duplicate edge: sourceHandle {line[0]!r} → component {line[1]} "
-                             f"appears more than once (typical import artifact: old 'Exception' "
-                             f"+ new '_exception' entries) — remove the duplicate")
+                    rep.err("EDGE_DUP_HANDLE", f"{cp}.nextComponents[{k}]",
+                            f"Duplicate edge on component #{c.get('id')}: sourceHandle "
+                            f"{line[0]!r} → component {line[1]} appears more than once "
+                            "(typical import artifact: an old 'Exception'/name=null edge "
+                            "plus a new '_exception' one on the same port to the same "
+                            "target). Fan-out to DIFFERENT targets is fine; only the exact "
+                            "same handle→target pair repeating is the problem",
+                            "Delete the duplicate edge (keep one edge per handle→target pair)")
                 line_seen.add(line)
             if nx.get("nextComponentId") is not None \
                     and nx.get("nextComponentId") not in id_set:

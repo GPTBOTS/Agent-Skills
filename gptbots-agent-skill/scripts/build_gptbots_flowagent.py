@@ -338,10 +338,12 @@ class FlowAgentBuilder:
         suffix: '' (single-output success), 'true'/'false' (Dataset/Bool/Condition/
         ChatGather/FormGather), 'other' (Bool/Branch fallback), or 'exception'
         (a wired exception outlet on LLM/Condition/ChatGather/Variable when
-        exceptionSwitch=True). The Classifier (Branch) is the exception: it has
-        NO branch_exception edge — its exception is the preset exceptionSwitch
-        row (set exceptionSwitch=True, don't wire it). Prefer branch_edge() for
-        Branch categories.
+        exceptionSwitch=True). A Classifier (Branch) may also have a wired
+        exception branch when its exceptionSwitch=True — connect(branch, dst,
+        suffix="exception") routes classification errors to a fallback node
+        (right{id}-branch_exception + name "_exception", seen in real exports); if
+        left unwired, exceptionSwitch handles the exception internally. Prefer
+        branch_edge() for Branch categories.
 
         The edge `id` is auto-generated as a unique integer (100000 + seq).
         The backend DTO parses this field as a Long, so ANY string value —
@@ -351,13 +353,25 @@ class FlowAgentBuilder:
         scomp = self._by_id[src]
         if scomp["type"] in _TERMINAL:
             raise ValueError(f"{scomp['type']} #{src} is terminal — no outgoing edges")
-        if scomp["type"] == "Branch" and suffix == "exception":
+        if scomp["type"] == "Branch" and suffix == "exception" and not scomp.get("exceptionSwitch"):
             raise ValueError(
-                "the Classifier (Branch) has no branch_exception edge — its exception is "
-                "governed by the exceptionSwitch toggle (a system-preset row, like Other), "
-                "not a wired edge. Set exceptionSwitch=True on the classifier and do not "
-                "connect an exception branch. (LLM/Condition/ChatGather/Variable do expose a "
-                "wired exception outlet — suffix='exception' is valid for those.)")
+                "wiring a Classifier (Branch) exception branch requires exceptionSwitch=True "
+                "on the classifier — the exception outlet only fires when the exception "
+                "mechanism is on. Set exceptionSwitch=True, then connect(branch, dst, "
+                "suffix='exception') to route classification errors to a fallback node "
+                "(this produces right{id}-branch_exception + name '_exception', as seen in "
+                "real exports). Or leave it unwired to let exceptionSwitch handle it internally.")
+        # A Variable node's success outlet is `variable_true` (edge name="_true"),
+        # NOT the bare `variable` handle — the platform's "assignment successful"
+        # port is keyed `variable_true`, so a plain `right{id}-variable` edge does
+        # not anchor to it and renders as a detached/floating line (and the port
+        # greys out), exactly like the Condition `_true` port. Treat the natural
+        # "success" call (suffix="" or "true") as the true outlet and auto-fill the
+        # handle+name. This mirrors the Condition handling below.
+        if scomp["type"] == "Variable" and suffix in ("", "true"):
+            suffix = "true"
+            if not name:
+                name = "_true"
         # A Condition node's outlets carry fixed names: the conditions_true edge is
         # name="_true" and its `condition` holds the IF text; conditions_false is
         # name="_false" with empty condition. Auto-fill the name if not given so raw
@@ -367,6 +381,10 @@ class FlowAgentBuilder:
                 name = "_true"
             elif suffix == "false":
                 name = "_false"
+        # Wired exception outlets (LLM/Condition/ChatGather/FormGather/Variable when
+        # exceptionSwitch=True) carry edge name="_exception" in real exports.
+        if suffix == "exception" and not name:
+            name = "_exception"
         self._edge_seq += 1
         eid = 100000 + self._edge_seq
         sh, th = self.sh(src, suffix), self.th(dst)

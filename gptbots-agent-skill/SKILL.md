@@ -3,7 +3,7 @@ name: gptbots-agent-skill
 description: Create, read, update, and optimize GPTBots (https://www.gptbots.ai) Agent, FlowAgent, LoopAgent, Audio (voice) Agent, and Workflow configs (.bot / .flow), import & publish them to a test-mode target via API, drive published Agents/Workflows via the Open API (evaluation, RAG testing, scheduled triggering, data & knowledge-base management), diagnose live conversations via message-level LogTree traces, create knowledge bases, and curate raw documents (PDF, Word, Excel, web, FAQ) into import-ready knowledge files. Use whenever the user mentions GPTBots or a .bot/.flow file, or wants to build/optimize/publish/evaluate a GPTBots Agent, FlowAgent, LoopAgent, Audio/voice Agent, or Workflow, run ops diagnostics on a conversation, create or manage a knowledge base, or organize knowledge-base documents.
 license: MIT
 metadata:
-  version: 1.18.1
+  version: 1.18.2
   generatedBy: gptbots-agent-skill
 ---
 
@@ -94,7 +94,7 @@ When the user wants to turn raw/messy material (PDF, Word, Excel, web export, FA
 
 ## Prompt quality for LLM-capable nodes (critical)
 
-Several nodes carry an LLM prompt: the top-level identity `prompt` of a QuestionAnswer agent, the LoopAgent's three center prompts (`persona` / `style` / `routing` — see its reference; the top-level `prompt` is dead there), the Audio Agent's `multiModal.identityPrompt` (which must be written for *speech*, not reading), FlowAgent `LLM` components, the Classifier (`Branch`) — **which is LLM-driven: every category rule is a prompt the LLM executes to route each message** — and `Condition` components (also LLM-judged), `ChatGather` (LLM-driven collection: its prompt's field definitions + SOP drive both asking and extraction, and it monopolizes the conversation while collecting — see the FlowAgent reference), and Workflow `LLM` / `INTENT` nodes. These prompts — the identity (system) prompt above all — determine the Agent's runtime quality and efficiency more than any other field, so invest more effort here than anywhere else in the config:
+Several nodes carry an LLM prompt: the top-level identity `prompt` of a QuestionAnswer agent, the LoopAgent's center `persona` — its single editable prompt, so tone and routing guidance both live there (the top-level `prompt` is dead on a LoopAgent), the Audio Agent's `multiModal.identityPrompt` (which must be written for *speech*, not reading), FlowAgent `LLM` components, the Classifier (`Branch`) — **which is LLM-driven: every category rule is a prompt the LLM executes to route each message** — and `Condition` components (also LLM-judged), `ChatGather` (LLM-driven collection: its prompt's field definitions + SOP drive both asking and extraction, and it monopolizes the conversation while collecting — see the FlowAgent reference), and Workflow `LLM` / `INTENT` nodes. These prompts — the identity (system) prompt above all — determine the Agent's runtime quality and efficiency more than any other field, so invest more effort here than anywhere else in the config:
 
 - **Clear, concise, executable.** State the role/identity, goal, boundaries, and expected output format in short imperative sentences. Every sentence should change model behavior; cut filler and vague adjectives — verbose prompts cost tokens on every turn and dilute the instructions that matter.
 - **One node, one job.** Scope each prompt to that node's single responsibility; don't restate global rules in every node — put shared identity/boundaries once in the identity prompt.

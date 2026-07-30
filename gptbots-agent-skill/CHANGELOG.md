@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-07-29 (1.18.2)
+
+### Changed
+
+- **LoopAgent: `persona` is the only editable prompt.** The console entry points for
+  the center's `style` and `routing` prompts have been removed from the product, so
+  text written there would shape runtime behaviour that no operator can review, edit
+  or reset. `build_gptbots_loopagent.py` no longer accepts `style=` / `routing=` and
+  always emits them as empty strings (the keys stay on the wire for parity with a
+  platform-seeded bot); the reference now folds tone and message-handling guidance
+  into the persona, with headed sections so a longer persona stays navigable.
+  New `CLAW_PROMPT_NO_UI` warning fires when `style` / `routing` / the legacy
+  `router` alias carry content.
+
+
 ## 2026-07-29 (1.18.1)
 
 Both fixes below came out of publishing a real LoopAgent to the platform and finding it

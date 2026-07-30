@@ -1213,7 +1213,7 @@ def _check_claw_center(center, rep):
     prompts = content.get("prompts")
     if prompts is not None and not isinstance(prompts, dict):
         rep.err("CLAW_PROMPTS_SHAPE", base + ".content.prompts",
-                "center.content.prompts must be an object {persona, style, routing}")
+                "center.content.prompts must be an object; `persona` is the only editable key")
     elif isinstance(prompts, dict):
         for key in ("persona", "style", "routing"):
             value = prompts.get(key)
@@ -1222,11 +1222,22 @@ def _check_claw_center(center, rep):
                         "prompts.%s must be a string (\"\" means \"use the engine default\")" % key)
             elif isinstance(value, str):
                 _check_single_brace_vars(value, base + ".content.prompts." + key, rep)
-        for legacy, modern in (("router", "routing"), ("mainAgentBase", "persona")):
-            if prompts.get(legacy) and not prompts.get(modern):
-                rep.warn("CLAW_PROMPT_LEGACY_ALIAS", base + ".content.prompts." + legacy,
-                         "`%s` is a deprecated alias for `%s`" % (legacy, modern),
-                         "Rename the field to `%s`" % modern)
+        if prompts.get("mainAgentBase") and not prompts.get("persona"):
+            rep.warn("CLAW_PROMPT_LEGACY_ALIAS", base + ".content.prompts.mainAgentBase",
+                     "`mainAgentBase` is a deprecated alias for `persona`",
+                     "Rename the field to `persona`")
+        # The console entry points for `style` / `routing` (and the legacy `router`
+        # alias) were removed: persona is now the only editable prompt. The engine
+        # still reads these keys, so text left here silently shapes behaviour that
+        # nobody can see, edit or reset from the UI.
+        for key in ("style", "routing", "router"):
+            if not _is_blank(prompts.get(key)):
+                rep.warn("CLAW_PROMPT_NO_UI", base + ".content.prompts." + key,
+                         "`%s` carries text, but its console entry point has been removed — "
+                         "the engine still applies it while no operator can review, edit or "
+                         "reset it" % key,
+                         "Fold the content into `persona` (the only editable prompt) and "
+                         'leave this as ""')
         if _is_blank(prompts.get("persona")):
             rep.warn("CLAW_PERSONA_EMPTY", base + ".content.prompts.persona",
                      "the identity prompt is empty - the engine ships no built-in persona, so the "

@@ -14,15 +14,19 @@ plus 7 satellites with contractual ids (center / keyEvent-1 / handoff-1 /
 knowledge-1 / skills-1 / tools-1 / database-1 / subagent-1), wired by 7 edges
 `center->{id}` with sort 0..6. This builder emits that topology exactly as the
 platform seeds it (ClawDefaultsHelper on the Java side, claw-rule-codec.ts on
-the front end), so the only things you decide are the three prompts, the loop
+the front end), so the only things you decide are the identity prompt, the loop
 guardrails, and which satellites are on.
 
-Where the leverage is:
-  * center.content.prompts.persona  - the identity prompt (shared with sub-agents)
-  * center.content.prompts.style    - customer-facing reply style
-  * center.content.prompts.routing  - business routing / action selection
-An EMPTY string means "use the engine default" - never paste an engine default
-back into the field. The top-level `prompt` stays empty for a LoopAgent.
+Where the leverage is: `center.content.prompts.persona`, the identity prompt. It
+is the ONLY operator-editable prompt on a LoopAgent - the console has no entry
+point for the other prompt fields, so everything you want the agent to do (tone,
+reply length, when to search knowledge, when to hand off) belongs in the persona.
+The top-level `prompt` stays empty for a LoopAgent.
+
+`style` and `routing` are still emitted as empty strings for wire parity with a
+platform-seeded bot, but this builder deliberately gives you no way to fill them:
+their console entry points were removed, so text written there could never be
+reviewed, edited or reset by the operator afterwards.
 
 Import-fatal rules enforced here (see references/create-gptbots-loopagent.md):
   * a ClawCenter component is mandatory
@@ -39,12 +43,10 @@ Example
     from build_gptbots_loopagent import loopagent_config, save
     from gptbots_prompts import load_prompt_store
 
-    P = load_prompt_store("prompts/")        # persona.md / style.md / routing.md
+    P = load_prompt_store("prompts/")        # persona.md
     cfg = loopagent_config(
         "Support LoopAgent",
         persona=P.require("persona"),
-        style=P.require("style"),
-        routing=P.require("routing"),
         knowledge=True, tools=True, database=False, subagent=False,
         handoff=True, key_event=True,
         max_turns=25, max_errors=5, max_budget_input_tokens=0,
@@ -133,7 +135,7 @@ def _check_base_url(base_url):
     return str(base_url).strip()
 
 
-def claw_center(persona="", style="", routing="", model="", base_url=None,
+def claw_center(persona="", model="", base_url=None,
                 max_tokens=DEFAULT_MAX_TOKENS, max_turns=25, max_errors=5,
                 max_budget_input_tokens=0, model_dynamic_params=None, **llm_extra):
     """Build the mandatory ClawCenter component (model + loop guardrails + prompts)."""
@@ -159,9 +161,11 @@ def claw_center(persona="", style="", routing="", model="", base_url=None,
             "llm": llm,
             "loop": {"maxTurns": max_turns, "maxErrors": max_errors,
                      "maxBudgetInputTokens": max_budget_input_tokens},
-            # "" == use the engine default. Never echo an engine default back.
-            "prompts": {"persona": persona or "", "style": style or "",
-                        "routing": routing or ""},
+            # persona is the only editable prompt; `style` / `routing` keep their
+            # keys for wire parity with the platform seed but are always emitted
+            # empty ("" == use the engine default) since the console dropped their
+            # entry points. Never echo an engine default back into any of them.
+            "prompts": {"persona": persona or "", "style": "", "routing": ""},
         },
         "nextComponents": [
             {"id": "%s->%s" % (CENTER_ID, sid), "nextComponentId": sid, "sort": i}
@@ -271,7 +275,7 @@ def claw_rule(center, key_event=True, default_severity="normal",
     return {"thumbnail": None, "components": components, "comments": []}
 
 
-def loopagent_config(name, persona="", style="", routing="",
+def loopagent_config(name, persona="",
                      first_message=None, preset_questions=None,
                      message_mode="QUEUE", tool_trace_recent_rounds=1,
                      short_term_memory=True, short_term_memory_round=30,
@@ -285,6 +289,15 @@ def loopagent_config(name, persona="", style="", routing="",
     reasoningEffort, plugins, userProperties, chatSecurityConfig, ...) can be
     passed through **kwargs and lands verbatim on the config.
     """
+    # Removed parameters: `style` / `routing` used to be editable center prompts.
+    # Their console entry points are gone, so they must not be filled — fail loudly
+    # instead of letting **kwargs drop the text onto the config as a top-level key.
+    for gone in ("style", "routing", "router"):
+        if gone in kwargs:
+            raise ValueError(
+                "`%s` is no longer a LoopAgent prompt — the console removed its entry point, "
+                "so text there would drive behaviour nobody can review or reset. Fold it into "
+                "`persona`, the only editable prompt." % gone)
     if message_mode not in MESSAGE_MODES:
         raise ValueError("messageMode must be QUEUE or APPEND")
     _int_in(int(tool_trace_recent_rounds), 0, 5, "clawToolTraceRecentRounds")
@@ -301,8 +314,7 @@ def loopagent_config(name, persona="", style="", routing="",
     center_kw = {k: kwargs.pop(k) for k in list(kwargs) if k in center_keys}
     rule_kw = {k: kwargs.pop(k) for k in list(kwargs) if k in rule_keys}
     if rule is None:
-        rule = claw_rule(claw_center(persona=persona, style=style, routing=routing, **center_kw),
-                         **rule_kw)
+        rule = claw_rule(claw_center(persona=persona, **center_kw), **rule_kw)
     elif center_kw or rule_kw:
         raise ValueError("pass either rule= or the center/satellite keyword arguments, not both")
 
@@ -355,14 +367,16 @@ def _demo(outdir):
     out.mkdir(parents=True, exist_ok=True)
     cfg = loopagent_config(
         "Demo LoopAgent",
-        persona="You are the front-line support agent for a demo SaaS product.\n"
-                "Answer in the customer's language. Never invent policy: if the knowledge "
-                "base does not cover it, say so and offer a human handoff.",
-        style="Keep replies under 120 words. Plain sentences, no marketing tone. "
-              "One concrete next step per reply.",
-        routing="Search the knowledge base before answering any product or billing question. "
-                "Open a key event for anything the customer expects follow-up on. "
-                "Hand off to a human on refunds, account security, or explicit request.",
+        persona="# Role\nYou are the front-line support agent for a demo SaaS product.\n"
+                "Answer in the customer's language.\n\n"
+                "# Boundaries\nNever invent policy: if the knowledge base does not cover it, "
+                "say so and offer a human handoff.\n\n"
+                "# How to handle a message\nSearch the knowledge base before answering any "
+                "product or billing question. Open a key event for anything the customer "
+                "expects follow-up on. Hand off to a human on refunds, account security, or "
+                "an explicit request.\n\n"
+                "# Reply style\nUnder 120 words. Plain sentences, no marketing tone. "
+                "One concrete next step per reply.",
         first_message="Hi! How can I help you today?",
         knowledge=True, tools=True, database=False, subagent=False,
         handoff=True, key_event=True,

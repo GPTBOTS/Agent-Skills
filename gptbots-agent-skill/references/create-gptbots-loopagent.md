@@ -15,7 +15,7 @@ You are **not drawing a flow**. You are giving the agent: an **identity** (perso
 
 Consequences for config authoring:
 - There are no nodes, edges, branches or handles to design. The topology is **fixed**: 1 `ClawCenter` + 7 satellites, always the same ids.
-- Almost all of the leverage sits in **three prompt fields** on the center (`persona` / `style` / `routing`) plus **which capabilities you switch on**.
+- Almost all of the leverage sits in **one field** — the center's `persona` prompt — plus **which capabilities you switch on**.
 - A capability that is "configured" but missing its resource (no knowledge base bound, no table picked, no webhook) produces a registered-but-broken tool. Prefer switching a satellite **off** over leaving it on and empty.
 
 ## 2. File shape
@@ -73,22 +73,26 @@ Only the center carries `nextComponents` — seven edges, `id = "center->{satell
 - **`multiModal.multiModalInput` must be present** (shared auto-save NPE guard). For LoopAgent also set `messageMode` — `QUEUE` (default: queued messages merge into one reply at the turn boundary) or `APPEND` (steering: queued text is absorbed at the next round). (`L0_MULTIMODAL_AUTOSAVE_NPE`, `CLAW_MESSAGE_MODE`)
 - **`clawToolTraceRecentRounds ∈ [0,5]`**, default `1`. It is counted in *user rounds*, independent of `shortTermMemoryRound`. `0` = older rounds keep only the plain Q/A text (the model can no longer see which tool it called or with what arguments). (`CLAW_TOOL_TRACE_ROUNDS`)
 
-## 4. The three prompts (where almost all the quality lives)
+## 4. The persona prompt (where almost all the quality lives)
 
-All three live in `center.content.prompts` and are the **only** editable prompt fields on a LoopAgent. Everything else (loop discipline, tool guidance, key-event policy, runtime env) is platform-managed engine text you cannot override.
+`center.content.prompts.persona` is the **only** editable prompt on a LoopAgent. The sibling keys `style` and `routing` still exist on the wire, but their console entry points were removed — treat them as platform-managed and always leave them empty. Everything else (loop discipline, tool guidance, key-event policy, runtime env) is engine text you cannot override either.
 
-| field | scope | what belongs in it |
-|---|---|---|
-| `persona` | main **and** sub-agent | Who the agent is, what product/market it serves, language policy, what it must never do, escalation boundaries. This is the identity prompt shown in the platform's full-screen editor. |
-| `style` | main **and** sub-agent | Customer-facing reply style only: length, tone, formatting, phrasing conventions. Keep it free of business rules. |
-| `routing` | main agent only | Business routing and action selection: which situations call for knowledge search, a data-table query, a key event, a handoff. Free-form guidance, **not** a JSON dispatcher — the old "output a strict JSON decision" format is legacy and warns at load. Supports the `{keyEventTypes}` placeholder, rendered against the bot's key-event catalogue. |
+Everything you want the agent to be and to do goes in **`persona`**, the identity prompt shown in the platform's full-screen editor:
+
+- **Identity** — who the agent is, what product and market it serves, language policy.
+- **Boundaries** — what it must never do, what needs identity verification, where it must escalate.
+- **How to handle each kind of message** — when to search knowledge, query a data table, open a key event, hand off to a human. Write it as guidance, not as a dispatcher that must emit JSON.
+- **Reply style** — length, tone, formatting, phrasing conventions.
+
+Give it headed sections (`# Role`, `# Boundaries`, `# How to handle a message`, `# Reply style`) so a long persona stays navigable for whoever edits it next.
 
 Writing rules (in addition to *Prompt quality for LLM-capable nodes* in SKILL.md):
 - **Persona is shared with sub-agents.** Anything you write as "you are the customer's first contact" also lands inside a background sub-agent. Write role/boundaries/language, not turn-taking choreography.
 - **Never reference per-turn-changing variables in `persona`.** It is the first segment of the model's stable cache prefix; a value that changes every turn (online duration, message count, timestamps) invalidates the prefix cache on every message → slower and materially more expensive.
 - **Leaving `persona` empty is legal**, and the engine ships no built-in persona — an empty persona simply injects no identity section. It is not a validation error.
-- **Tell the agent when to read deeply.** The `read_source_document` tool (full / grep read of a retrieved document) is under-triggered by default; a sentence in `persona` or `routing` about reading the whole document when recall is thin measurably improves answers.
-- Keep the prompts in a `prompts/` folder (`persona.md`, `style.md`, `routing.md`) and load them with `load_prompts("prompts/")`, exactly like every other bot type in this skill.
+- **Tell the agent when to read deeply.** The `read_source_document` tool (full / grep read of a retrieved document) is under-triggered by default; a sentence in `persona` about reading the whole document when recall is thin measurably improves answers.
+- Keep the prompt in a `prompts/` folder (`persona.md`) and load it with `load_prompts("prompts/")`, exactly like every other bot type in this skill.
+- **Do not write into `style` or `routing`.** The wire still carries those keys and the engine still reads them, but the console removed their entry points, so any text there shapes behaviour no operator can review, edit or reset. The builder always emits them empty and the validator warns (`CLAW_PROMPT_NO_UI`) when it finds content. Everything they used to hold belongs in `persona`.
 
 ## 5. Wiring capabilities (satellite by satellite)
 
@@ -124,12 +128,10 @@ Do not hand-write the JSON. Use `../scripts/build_gptbots_loopagent.py`:
 from build_gptbots_loopagent import loopagent_config, save
 from gptbots_prompts import load_prompt_store
 
-P = load_prompt_store("prompts/")            # persona.md / style.md / routing.md
+P = load_prompt_store("prompts/")            # persona.md
 cfg = loopagent_config(
     "Support LoopAgent",
     persona=P.require("persona"),
-    style=P.require("style"),
-    routing=P.require("routing"),
     max_turns=25, max_errors=5, max_budget_input_tokens=0,
     knowledge=True,                # keep the Dataset satellite on (ids bound after import)
     database=False, tools=True, subagent=False,

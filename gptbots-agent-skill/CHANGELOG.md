@@ -1,5 +1,70 @@
 # Changelog
 
+## 2026-07-29 (1.18.1)
+
+Both fixes below came out of publishing a real LoopAgent to the platform and finding it
+imported cleanly, saved cleanly, and was dead on arrival.
+
+### Fixed
+
+- **`multiModal.multiModalInput` must carry `fileLimit`.** `BotChatOpenAPIVersion2Data\
+  PrePreparationService` unboxes `getFileLimit()` into an `int` with no null check, so a
+  `.bot` emitted with a bare `{"multiModalInput": {}}` imports fine, auto-saves fine, and
+  then answers **every** `POST /v2/conversation/message` with
+  `50000 NullPointerException - Cannot invoke "java.lang.Integer.intValue()"`.
+  `build_gptbots_agent.py` and `build_gptbots_loopagent.py` now emit the same complete
+  known-good block the FlowAgent builder already used, and the validator rejects a
+  missing/non-integer `fileLimit` (`L0_MULTIMODAL_FILE_LIMIT`).
+
+### Added
+
+- **`CLAW_MODEL_EMPTY` warning.** `fixLoopAgentCenterModel` returns *early* when
+  `clawRule` center `llm.model` is blank — only a **stale** id is re-checked against the
+  gateway catalogue and replaced. So a blank model is never backfilled: the imported
+  agent fails its first frame with `50101 No LLM credentials`, and importing into an
+  existing LoopAgent silently wipes the model that target already had. Documented in
+  `references/create-gptbots-loopagent.md` §3 + its delivery checklist, and in
+  `references/test-mode-update-publish.md` (carry the target's model across before
+  updating an existing LoopAgent).
+
+
+## 2026-07-29
+
+### Added
+
+- **LoopAgent support (`botType=LoopAgent`).** New `references/create-gptbots-loopagent.md`
+  (clawRule topology, import-fatal invariants, the three center prompts, capability
+  wiring) and `references/loopagent-runtime.md` (stateless-engine model, save-vs-publish,
+  the silent capability gates, memory/burst-message semantics, error codes, symptom
+  table). New `scripts/build_gptbots_loopagent.py` emits the exact platform topology —
+  1 `ClawCenter` + 7 satellites with contractual ids and `center->{id}` edges — and
+  refuses out-of-range loop control, bad skill refs and SSRF-prone `baseUrl` values.
+
+- **Audio Agent support (`botType=Audio`).** New `references/create-gptbots-audioagent.md`
+  (engine modes and their model wiring, the voice-only `identityPrompt`, the full
+  `multiModal` block with server-enforced ranges) and
+  `scripts/build_gptbots_audioagent.py`.
+
+- **Validator: LoopAgent + Audio checks** (`validate_gptbots_config.py`). `botType` now
+  accepts `LoopAgent` / `Audio`. New codes:
+  `CLAW_RULE_MISSING`, `CLAW_CENTER_MISSING` / `_DUPLICATE` / `_DISABLED`,
+  `CLAW_LOOP_RANGE`, `CLAW_TOO_MANY_COMPONENTS`, `CLAW_COMP_ID_NOT_STRING`,
+  `CLAW_BASEURL_SSRF`, `CLAW_MODEL_NAME_AS_ID`, `CLAW_KB_RANGE` / `_SEARCH_MODE`,
+  `CLAW_RETIRED_KNOWLEDGE_KEY`, `CLAW_SKILL_REF_*`, `CLAW_ENV_REFS`,
+  `CLAW_TOP_LEVEL_PROMPT`, `CLAW_TOOL_TRACE_ROUNDS`, `CLAW_MESSAGE_MODE`,
+  `CLAW_SUBAGENT_RANGE`, `CLAW_INERT_FIELD`, `CLAW_PRIVATE_SKILL_*`,
+  `AUDIO_ENGINE_MODE`, `AUDIO_SOURCE_LANG`, `AUDIO_CONFIG_RANGE`, `AUDIO_VOICE`,
+  `AUDIO_QUALITY`, `AUDIO_OUTPUT_MODE`, `AUDIO_MAX_RESP_TOKENS`, `AUDIO_URL`,
+  `AUDIO_IDENTITY_PROMPT_EMPTY`, plus cross-type placement warnings (`XTYPE_*`) that
+  catch a `clawRule` / voice block sitting on the wrong `botType`.
+
+### Docs
+
+- `SKILL.md` (1.17.0 → 1.18.0): added a five-row type-routing table at the top so the
+  right reference is picked before any work starts, and kept the file short by leaving
+  every LoopAgent/Audio specific rule in its own reference rather than inlining it here.
+
+
 ## 2026-07-15
 
 ### Fixed

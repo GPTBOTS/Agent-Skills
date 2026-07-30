@@ -18,6 +18,14 @@ ported from the real backend and frontend validation:
   - Frontend .../features/flow-bot/canvas/data/handle-connection-point.ts + convert.ts
     (FlowAgent edge handle ids: {side}{id}-{key}[_suffix]; a handle that doesn't resolve to a
     rendered port makes the canvas draw a distorted/misrouted edge)
+  - Backend .../bean/entity/ClawFlow*.java, .../consts/ClawComponentTypes.java,
+    .../helper/ClawDefaultsHelper.java, .../helper/ClawLoopControlValidator.java,
+    .../service/exportimport/ClawRuleTransferHelper.java + ImportSecurityScanner.java
+    (LoopAgent clawRule topology, loop-control ranges, import stripping, SSRF/DoS limits)
+  - Engine ailab-claw-engine/.../csagent/botFlowAdapter.ts + types/botFlow.ts and frontend
+    .../features/claw-bot/data/claw-rule-codec.ts (LoopAgent wire shape & defaults)
+  - Backend .../helper/audio/AudioConfigValidator.java, .../bean/entity/BotMultiModal.java
+    (+ entity/audio/*.java), .../common/enums/AudioEngineMode.java (Audio Agent voice config)
 When the schema changes, re-sync against these and bump the skill version.
 
 Usage:
@@ -29,9 +37,10 @@ import json
 import re
 import sys
 
-# Bot types this skill authors. The backend BotType enum has additional types, but this
-# skill only generates QuestionAnswer / Flow / Workflow, so the validator scopes to those.
-BOT_TYPES = {"QuestionAnswer", "Flow", "Workflow"}
+# Bot types this skill authors. Mirrors ai.altatech.oversea.common.enums.BotType, minus the
+# types this skill does not generate (MultiAgent, Clawsearch). "Claw" is the historical alias
+# of LoopAgent - the backend still accepts it on read, but always emit "LoopAgent".
+BOT_TYPES = {"QuestionAnswer", "Flow", "Workflow", "LoopAgent", "Audio"}
 EXPORT_TYPES = {"BOT", "WORKFLOW"}
 
 # Valid HumanManufacturerEnum values (.bot top-level `humanConfig.manufacturer`).
@@ -218,11 +227,11 @@ def check_top_level(cfg, rep):
     bot_type = cfg.get("botType")
     if bot_type not in BOT_TYPES:
         rep.err("L0_BOT_TYPE", "$.botType", f"Invalid botType: {bot_type}",
-                "Set it to QuestionAnswer / Flow / Workflow")
+                "Set it to QuestionAnswer / Flow / LoopAgent / Audio / Workflow")
     # exportType / botType consistency
     if bot_type == "Workflow" and export_type != "WORKFLOW":
         rep.err("L0_TYPE_MISMATCH", "$.exportType", "Workflow requires exportType=WORKFLOW")
-    if bot_type in {"QuestionAnswer", "Flow"} and export_type == "WORKFLOW":
+    if bot_type in {"QuestionAnswer", "Flow", "LoopAgent", "Audio"} and export_type == "WORKFLOW":
         rep.err("L0_TYPE_MISMATCH", "$.exportType", f"{bot_type} requires exportType=BOT")
     if _is_blank(cfg.get("formatVersion")):
         rep.warn("L0_FORMAT_VERSION", "$.formatVersion", "It is recommended to set formatVersion (e.g. \"1.0\")")
@@ -244,13 +253,30 @@ def check_top_level(cfg, rep):
             rep.err("L0_MULTIMODAL_AUTOSAVE_NPE", "$.multiModal",
                     "multiModal.multiModalInput is missing/null — the imported bot will hit a "
                     "backend NPE (HTTP 500) on every console auto-save",
-                    'Add at least "multiModal": {"multiModalInput": {}} (empty object is safe: '
-                    "null chatMode is only compared against INTERRUPT). Do NOT guess "
-                    "audioMode/chatMode/imageMode enum values — copy them from a real export")
+                    'Emit the full known-good block (builder DEFAULT_MULTIMODAL()); a bare '
+                    '{"multiModalInput": {}} survives auto-save but still dies on the chat API '
+                    "(see L0_MULTIMODAL_FILE_LIMIT). Do NOT guess audioMode/chatMode/imageMode "
+                    "enum values — copy them from a real export")
+        else:
+            # BotChatOpenAPIVersion2DataPrePreparationService unboxes
+            #   int inputFileLimit = ...getMultiModalInput().getFileLimit();
+            # with no null check, so a .bot whose multiModalInput omits fileLimit imports
+            # cleanly, saves cleanly, and then answers EVERY POST /v2/conversation/message
+            # with 50000 "NullPointerException - Cannot invoke java.lang.Integer.intValue()".
+            # Console-created bots are seeded with fileLimit; only imported ones hit this.
+            limit = mmi.get("fileLimit")
+            if limit is None or isinstance(limit, bool) or not isinstance(limit, int):
+                rep.err("L0_MULTIMODAL_FILE_LIMIT", "$.multiModal.multiModalInput.fileLimit",
+                        "multiModalInput.fileLimit is missing/not an integer — the Open API v2 "
+                        "chat endpoint unboxes it, so every message returns "
+                        "50000 NullPointerException (import and console auto-save still succeed, "
+                        "which is why this passes unnoticed)",
+                        "Set an integer (1 is the platform default for a new bot), or emit the "
+                        "whole known-good multiModal block from the builder")
     # QuestionAnswer field-name gotchas (confirmed against a real export): the opening
     # line is `firstMessage` and the suggested questions are `presetQuestions`. The
     # plausible-looking `welcomeMessage` / `guidingQuestions` are dropped on import.
-    if bot_type == "QuestionAnswer":
+    if bot_type in ("QuestionAnswer", "Audio", "LoopAgent"):
         if "welcomeMessage" in cfg and "firstMessage" not in cfg:
             rep.warn("AGENT_WELCOME_FIELD", "$.welcomeMessage",
                      "use `firstMessage` for the opening line; `welcomeMessage` is dropped on import")
@@ -1050,6 +1076,579 @@ def _range(v, low, high, path, rep, exclusive_high=False):
         rep.err("VAL_RANGE", path, f"{path}={f} is out of range {bound}")
 
 
+# --------------------------- L7 LoopAgent (clawRule) ---------------------------
+# Sources: backend .../bean/entity/ClawFlow.java + ClawFlowComponent.java + ClawFlowNext.java,
+#   .../consts/ClawComponentTypes.java, .../helper/ClawDefaultsHelper.java (default topology),
+#   .../helper/ClawLoopControlValidator.java (RANGE CHECK RUNS ON THE IMPORT PATH),
+#   .../service/exportimport/ClawRuleTransferHelper.java + ImportSecurityScanner.java,
+#   engine ailab-claw-engine/.../csagent/botFlowAdapter.ts + types/botFlow.ts,
+#   frontend .../features/claw-bot/data/claw-rule-codec.ts
+
+CLAW_CENTER_TYPE = "ClawCenter"
+# Contractual ids + order (ClawDefaultsHelper == claw-topology.ts SATELLITES, sort 0..6).
+CLAW_SATELLITES = [("keyEvent-1", "ClawKeyEvent"), ("handoff-1", "Human"),
+                   ("knowledge-1", "Dataset"), ("skills-1", "ClawSkill"),
+                   ("tools-1", "ToolApi"), ("database-1", "ClawDB"),
+                   ("subagent-1", "ClawSubAgent")]
+CLAW_COMPONENT_TYPES = {"ClawCenter", "ClawKeyEvent", "ClawSkill", "ClawDB", "ClawSubAgent",
+                        "ClawModule", "Human", "Dataset", "ToolApi"}
+MAX_CLAW_COMPONENTS = 64          # ImportSecurityScanner.MAX_CLAW_COMPONENTS
+MAX_CLAW_SKILL_REFS = 10          # claw-rule-codec.ts MAX_CLAW_SKILL_REFS
+MAX_PRIVATE_SKILLS = 50           # ImportSecurityScanner.MAX_PRIVATE_SKILLS
+CLAW_SKILL_REF_SOURCES = {"SYSTEM", "ORGANIZATION"}
+CLAW_SEARCH_MODES = {"mix", "semantics", "keyword"}
+CLAW_SEVERITIES = {"low", "normal", "high", "urgent"}
+CLAW_MESSAGE_MODES = {"QUEUE", "APPEND"}          # BotMessageModeEnum (LoopAgent only)
+# Retired knowledge keys: read-tolerated by the engine, never written by the platform.
+CLAW_RETIRED_KNOWLEDGE_KEYS = ("customKnowledgeType", "enhancementMessageSwitch",
+                               "docCorrelationSwitch", "noCorrelationResponse")
+# Fields the engine does not consume at all - configuring them changes nothing.
+CLAW_INERT_KEYEVENT_KEYS = ("titleStrategy", "autoCreateOnSpawn", "autoResolveIdleDays",
+                            "slaHighMs", "slaNormalMs", "keyEventTypes", "triggerPrompt")
+_HEX24_RE = re.compile(r"^[0-9a-fA-F]{24}$")
+_PRIVATE_HOST_RE = re.compile(
+    r"^(localhost|127\.|0\.0\.0\.0$|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2[0-9]|3[01])\.)")
+
+
+def _public_http_url(url):
+    """Return an error string if `url` is not a public http(s) URL, else None.
+
+    Mirrors ImportSecurityScanner.checkUrl: templated ({{var}}) and relative URLs
+    are skipped, non-http(s) schemes are rejected, internal/loopback/link-local
+    hosts (incl. the 169.254.169.254 cloud-metadata address) are rejected.
+    """
+    if not isinstance(url, str) or not url.strip():
+        return None
+    u = url.strip()
+    if "{{" in u or "://" not in u:
+        return None
+    low = u.lower()
+    if not (low.startswith("http://") or low.startswith("https://")):
+        return "only http/https URLs are allowed"
+    host = low.split("://", 1)[1].split("/", 1)[0].split("@")[-1].split(":")[0]
+    if _PRIVATE_HOST_RE.match(host) or host.endswith(".local"):
+        return "points at an internal/loopback/link-local address (%s)" % host
+    return None
+
+
+def _claw_int_range(value, low, high, path, rep, code, label):
+    """Integer range check with the backend's strictness (bools and floats are not ints)."""
+    if value is None:
+        return
+    if isinstance(value, bool) or not isinstance(value, int):
+        rep.err(code, path, "%s must be an integer, got %r" % (label, value),
+                "Write a bare integer (a float or a quoted number is rejected on import)")
+        return
+    if value < low or (high is not None and value > high):
+        bound = "[%s, %s]" % (low, "inf" if high is None else high)
+        rep.err(code, path, "%s=%s is out of range %s" % (label, value, bound),
+                "Bring the value inside %s" % bound)
+
+
+def _claw_find(components, ctype):
+    return [c for c in components if isinstance(c, dict) and c.get("type") == ctype]
+
+
+def _check_claw_center(center, rep):
+    base = "$.clawRule.components[center]"
+    content = center.get("content")
+    if not isinstance(content, dict):
+        rep.err("CLAW_CENTER_CONTENT", base + ".content",
+                "ClawCenter.content must be an object",
+                "Emit it with build_gptbots_loopagent.claw_center()")
+        return
+    if content.get("enabled") is False:
+        rep.err("CLAW_CENTER_DISABLED", base + ".content.enabled",
+                "center.content.enabled=false is a kill switch - the engine answers 40300 "
+                "(ClawAgent disabled) on every turn",
+                "Set it to true; there is no UI toggle for this field")
+
+    llm = content.get("llm")
+    if not isinstance(llm, dict):
+        rep.err("CLAW_CENTER_LLM", base + ".content.llm",
+                "center.content.llm must be an object {model, baseUrl, maxTokens}")
+    else:
+        model = llm.get("model")
+        if _is_blank(model):
+            # fixLoopAgentCenterModel returns early on a blank id — it is NOT backfilled,
+            # on either import path. The imported agent therefore has no brain model and
+            # the engine fails the first frame with 50101 "No LLM credentials". Worse, on
+            # import-as-version this OVERWRITES the model the target already had.
+            rep.warn("CLAW_MODEL_EMPTY", base + ".content.llm.model",
+                     "the brain model is empty — the import does not backfill it (a blank id "
+                     "is returned early, unlike a stale one), so the agent answers 50101 "
+                     "'No LLM credentials' on the first message, and importing into an "
+                     "EXISTING LoopAgent wipes the model that target had",
+                     "Copy the gateway model_version_id out of an export of the target agent, "
+                     "or tell the user to re-pick the model in the console (设置页 → 智能体大脑 "
+                     "→ 模型) and publish again after importing")
+        if isinstance(model, str) and model.strip() and not _HEX24_RE.match(model.strip()):
+            rep.warn("CLAW_MODEL_NAME_AS_ID", base + ".content.llm.model",
+                     "%r does not look like an AMH gateway model_version_id (24-hex opaque id)"
+                     % model,
+                     "Leave it blank so the import backfills the platform default - a readable "
+                     "model name cannot be routed by the gateway (first frame fails with 50101)")
+        bad = _public_http_url(llm.get("baseUrl"))
+        if bad:
+            rep.err("CLAW_BASEURL_SSRF", base + ".content.llm.baseUrl",
+                    "llm.baseUrl %s" % bad,
+                    "Use null (normal case) or a public http(s) URL - the import security scan "
+                    "rejects internal addresses")
+        _claw_int_range(llm.get("maxTokens"), 1, None, base + ".content.llm.maxTokens", rep,
+                        "CLAW_MAX_TOKENS", "llm.maxTokens")
+
+    loop = content.get("loop")
+    if loop is not None and not isinstance(loop, dict):
+        rep.err("CLAW_LOOP_SHAPE", base + ".content.loop", "center.content.loop must be an object")
+    elif isinstance(loop, dict):
+        # ClawLoopControlValidator runs on the import path too, so these are hard errors.
+        _claw_int_range(loop.get("maxTurns"), 1, 100, base + ".content.loop.maxTurns", rep,
+                        "CLAW_LOOP_RANGE", "loop.maxTurns")
+        _claw_int_range(loop.get("maxErrors"), 0, 50, base + ".content.loop.maxErrors", rep,
+                        "CLAW_LOOP_RANGE", "loop.maxErrors")
+        _claw_int_range(loop.get("maxBudgetInputTokens"), 0, None,
+                        base + ".content.loop.maxBudgetInputTokens", rep,
+                        "CLAW_LOOP_RANGE", "loop.maxBudgetInputTokens")
+
+    prompts = content.get("prompts")
+    if prompts is not None and not isinstance(prompts, dict):
+        rep.err("CLAW_PROMPTS_SHAPE", base + ".content.prompts",
+                "center.content.prompts must be an object {persona, style, routing}")
+    elif isinstance(prompts, dict):
+        for key in ("persona", "style", "routing"):
+            value = prompts.get(key)
+            if value is not None and not isinstance(value, str):
+                rep.err("CLAW_PROMPT_TYPE", base + ".content.prompts." + key,
+                        "prompts.%s must be a string (\"\" means \"use the engine default\")" % key)
+            elif isinstance(value, str):
+                _check_single_brace_vars(value, base + ".content.prompts." + key, rep)
+        for legacy, modern in (("router", "routing"), ("mainAgentBase", "persona")):
+            if prompts.get(legacy) and not prompts.get(modern):
+                rep.warn("CLAW_PROMPT_LEGACY_ALIAS", base + ".content.prompts." + legacy,
+                         "`%s` is a deprecated alias for `%s`" % (legacy, modern),
+                         "Rename the field to `%s`" % modern)
+        if _is_blank(prompts.get("persona")):
+            rep.warn("CLAW_PERSONA_EMPTY", base + ".content.prompts.persona",
+                     "the identity prompt is empty - the engine ships no built-in persona, so the "
+                     "agent runs with no identity section (legal, but almost never intended)",
+                     "Write the identity prompt here; it is the highest-leverage field of a LoopAgent")
+
+    nexts = center.get("nextComponents")
+    if not isinstance(nexts, list) or len(nexts) != len(CLAW_SATELLITES):
+        rep.warn("CLAW_CENTER_EDGES", base + ".nextComponents",
+                 "the center should carry one edge per satellite (%d expected)" % len(CLAW_SATELLITES),
+                 "Emit them as {id:\"center-><sat>\", nextComponentId:\"<sat>\", sort:<0..6>}")
+    else:
+        for i, edge in enumerate(nexts):
+            ep = "%s.nextComponents[%d]" % (base, i)
+            if not isinstance(edge, dict):
+                rep.err("CLAW_EDGE_SHAPE", ep, "each nextComponents entry must be an object")
+                continue
+            target = edge.get("nextComponentId")
+            if not isinstance(target, str) or not target:
+                rep.err("CLAW_EDGE_ID_NOT_STRING", ep + ".nextComponentId",
+                        "nextComponentId must be a non-empty STRING on a LoopAgent "
+                        "(FlowAgent uses integers; Claw matches string handles)")
+            sort = edge.get("sort")
+            if sort is not None and (isinstance(sort, bool) or not isinstance(sort, int)):
+                rep.err("CLAW_EDGE_SORT", ep + ".sort", "sort must be an integer")
+
+
+def _check_claw_knowledge(content, path, rep):
+    _claw_int_range(content.get("matchDataLimit"), 1, 50, path + ".matchDataLimit", rep,
+                    "CLAW_KB_RANGE", "matchDataLimit")
+    _range(content.get("docCorrelation"), 0.0, 1.0, path + ".docCorrelation", rep)
+    _range(content.get("embeddingRate"), 0.0, 1.0, path + ".embeddingRate", rep)
+    _check_enum(content.get("searchMode"), CLAW_SEARCH_MODES, "CLAW_KB_SEARCH_MODE",
+                path + ".searchMode", rep, "searchMode")
+    hop = content.get("graphHopLimit")
+    if hop is not None:
+        _claw_int_range(hop, 1, 5, path + ".graphHopLimit", rep, "CLAW_KB_RANGE", "graphHopLimit")
+    logic = content.get("metadataFilterLogic")
+    if logic is not None and logic not in ("AND", "OR"):
+        rep.err("CLAW_KB_FILTER_LOGIC", path + ".metadataFilterLogic",
+                "metadataFilterLogic must be AND or OR, got %r" % logic)
+    for key in CLAW_RETIRED_KNOWLEDGE_KEYS:
+        if key in content:
+            rep.warn("CLAW_RETIRED_KNOWLEDGE_KEY", path + "." + key,
+                     "`%s` is retired for LoopAgent (read-tolerated, never written)" % key,
+                     "Remove it - the engine decides when to search")
+
+
+def _check_claw_skills(content, path, rep):
+    refs = content.get("skillRefs")
+    if refs is None:
+        return
+    if not isinstance(refs, list):
+        rep.err("CLAW_SKILL_REFS_SHAPE", path + ".skillRefs", "skillRefs must be a list")
+        return
+    if len(refs) > MAX_CLAW_SKILL_REFS:
+        rep.err("CLAW_SKILL_REFS_MAX", path + ".skillRefs",
+                "at most %d skills may be attached to one agent (got %d)"
+                % (MAX_CLAW_SKILL_REFS, len(refs)))
+    for i, ref in enumerate(refs):
+        rp = "%s.skillRefs[%d]" % (path, i)
+        if not isinstance(ref, dict):
+            rep.err("CLAW_SKILL_REF_SHAPE", rp, "each skillRef must be {skillId, enabled, source}")
+            continue
+        if not isinstance(ref.get("skillId"), str) or not ref.get("skillId"):
+            rep.err("CLAW_SKILL_REF_ID", rp + ".skillId", "skillId must be a non-empty string")
+        if not isinstance(ref.get("enabled"), bool):
+            rep.err("CLAW_SKILL_REF_ENABLED", rp + ".enabled",
+                    "enabled must be a boolean - a malformed row is dropped silently on read")
+        if ref.get("source") not in CLAW_SKILL_REF_SOURCES:
+            rep.err("CLAW_SKILL_REF_SOURCE", rp + ".source",
+                    "source must be one of %s, got %r"
+                    % (sorted(CLAW_SKILL_REF_SOURCES), ref.get("source")),
+                    "An unknown source makes the whole row malformed and it is dropped on read")
+
+
+def check_claw_rule(cfg, rep):
+    """Validate a LoopAgent config: the clawRule topology plus its LoopAgent-only top-level fields."""
+    rule = cfg.get("clawRule")
+    if not isinstance(rule, dict):
+        rep.err("CLAW_RULE_MISSING", "$.clawRule",
+                "a LoopAgent must carry a clawRule object",
+                "Generate it with scripts/build_gptbots_loopagent.py (1 ClawCenter + 7 satellites)")
+        return
+    components = rule.get("components")
+    if not isinstance(components, list) or not components:
+        rep.err("CLAW_COMPONENTS_MISSING", "$.clawRule.components",
+                "clawRule.components must be a non-empty list")
+        return
+    if len(components) > MAX_CLAW_COMPONENTS:
+        rep.err("CLAW_TOO_MANY_COMPONENTS", "$.clawRule.components",
+                "clawRule has too many components (%d > %d) - the import security scan rejects it"
+                % (len(components), MAX_CLAW_COMPONENTS),
+                "The legal topology is 8: 1 ClawCenter + 7 satellites")
+
+    seen_ids = set()
+    by_id = {}
+    for i, comp in enumerate(components):
+        cp = "$.clawRule.components[%d]" % i
+        if not isinstance(comp, dict):
+            rep.err("CLAW_COMP_SHAPE", cp, "each component must be an object")
+            continue
+        cid = comp.get("id")
+        if not isinstance(cid, str) or not cid:
+            rep.err("CLAW_COMP_ID_NOT_STRING", cp + ".id",
+                    "component id must be a non-empty STRING on a LoopAgent "
+                    "(got %r) - FlowAgent's integer ids do not apply here" % (cid,))
+        else:
+            if cid in seen_ids:
+                rep.err("CLAW_COMP_ID_DUP", cp + ".id", "duplicate component id %r" % cid)
+            seen_ids.add(cid)
+            by_id[cid] = comp
+        ctype = comp.get("type")
+        if not isinstance(ctype, str) or not ctype:
+            rep.err("CLAW_COMP_TYPE", cp + ".type", "component type must be a non-empty string")
+        elif ctype not in CLAW_COMPONENT_TYPES:
+            rep.warn("CLAW_COMP_TYPE_UNKNOWN", cp + ".type",
+                     "unknown Claw component type %r - the engine ignores it" % ctype,
+                     "Use one of: " + ", ".join(sorted(CLAW_COMPONENT_TYPES)))
+        if comp.get("content") is not None and not isinstance(comp.get("content"), dict):
+            rep.err("CLAW_COMP_CONTENT", cp + ".content", "component content must be an object")
+        if ctype != CLAW_CENTER_TYPE and comp.get("nextComponents"):
+            rep.warn("CLAW_SATELLITE_EDGES", cp + ".nextComponents",
+                     "satellites carry no outgoing edges in the radial topology",
+                     "Drop the field; only the center owns edges")
+
+    centers = _claw_find(components, CLAW_CENTER_TYPE)
+    if not centers:
+        rep.err("CLAW_CENTER_MISSING", "$.clawRule.components",
+                "no ClawCenter component - the engine rejects the rule with "
+                "\"center node required\" (40001 botRule invalid), and the import silently "
+                "replaces the whole rule with the platform default topology",
+                "Add the center node (build_gptbots_loopagent.claw_center())")
+    else:
+        if len(centers) > 1:
+            rep.err("CLAW_CENTER_DUPLICATE", "$.clawRule.components",
+                    "%d ClawCenter components - exactly one is allowed" % len(centers))
+        _check_claw_center(centers[0], rep)
+
+    for sid, stype in CLAW_SATELLITES:
+        comp = by_id.get(sid)
+        if comp is None:
+            if not _claw_find(components, stype):
+                rep.warn("CLAW_SATELLITE_MISSING", "$.clawRule.components",
+                         "satellite %s (%s) is missing - that capability is simply unavailable"
+                         % (sid, stype),
+                         "Emit the full default topology unless you deliberately dropped it")
+            continue
+        if comp.get("type") != stype:
+            rep.err("CLAW_SATELLITE_TYPE", "$.clawRule.components[%s].type" % sid,
+                    "satellite %s must have type %s, got %r" % (sid, stype, comp.get("type")))
+        content = comp.get("content")
+        if not isinstance(content, dict):
+            continue
+        path = "$.clawRule.components[%s].content" % sid
+        if stype == "Dataset":
+            _check_claw_knowledge(content, path, rep)
+            if content.get("docGroupIds") or content.get("datasetIds"):
+                rep.warn("CLAW_ENV_REFS", path + ".docGroupIds",
+                         "knowledge-base ids are environment-bound and are cleared when the file "
+                         "is imported as a new Agent",
+                         "Ship an empty list and bind the knowledge bases after import")
+        elif stype == "ClawDB":
+            if content.get("tableIds"):
+                rep.warn("CLAW_ENV_REFS", path + ".tableIds",
+                         "data-table ids are environment-bound and are cleared on import as a new Agent",
+                         "Ship an empty list and pick the tables after import")
+        elif stype == "ToolApi":
+            if content.get("pluginIds"):
+                rep.warn("CLAW_ENV_REFS", path + ".pluginIds",
+                         "plugin/MCP ids are filtered against the target organization on import",
+                         "Ship an empty list unless the target org owns exactly these plugins")
+        elif stype == "ClawSkill":
+            _check_claw_skills(content, path, rep)
+        elif stype == "ClawKeyEvent":
+            _check_enum(content.get("defaultSeverity"), CLAW_SEVERITIES, "CLAW_KEYEVENT_SEVERITY",
+                        path + ".defaultSeverity", rep, "defaultSeverity")
+        elif stype == "ClawSubAgent":
+            _claw_int_range(content.get("parallelCount"), 1, 5, path + ".parallelCount", rep,
+                            "CLAW_SUBAGENT_RANGE", "parallelCount")
+            if "maxWaitMinutes" in content:
+                rep.warn("CLAW_INERT_FIELD", path + ".maxWaitMinutes",
+                         "maxWaitMinutes is persisted but never consumed by the engine",
+                         "Remove it, and do not promise the behaviour to the user")
+
+    # --- LoopAgent-only top-level fields -------------------------------------
+    if not _is_blank(cfg.get("prompt")):
+        rep.warn("CLAW_TOP_LEVEL_PROMPT", "$.prompt",
+                 "a LoopAgent's identity is clawRule.center.content.prompts.persona - the "
+                 "top-level prompt is dead text",
+                 "Move the text into the center's persona prompt and leave this empty")
+    if "clawToolTraceRecentRounds" in cfg:
+        _claw_int_range(cfg.get("clawToolTraceRecentRounds"), 0, 5,
+                        "$.clawToolTraceRecentRounds", rep, "CLAW_TOOL_TRACE_ROUNDS",
+                        "clawToolTraceRecentRounds")
+    mm = cfg.get("multiModal")
+    mmi = mm.get("multiModalInput") if isinstance(mm, dict) else None
+    if isinstance(mmi, dict):
+        mode = mmi.get("messageMode")
+        if mode is None:
+            rep.warn("CLAW_MESSAGE_MODE", "$.multiModal.multiModalInput.messageMode",
+                     "messageMode is unset - historical data is treated as QUEUE",
+                     "Set it explicitly to QUEUE (merge queued messages at the turn boundary) "
+                     "or APPEND (absorb them into the running turn)")
+        elif mode not in CLAW_MESSAGE_MODES:
+            rep.err("CLAW_MESSAGE_MODE", "$.multiModal.multiModalInput.messageMode",
+                    "messageMode must be QUEUE or APPEND, got %r" % mode)
+    skills = cfg.get("privateSkills")
+    if isinstance(skills, list):
+        if len(skills) > MAX_PRIVATE_SKILLS:
+            rep.err("CLAW_PRIVATE_SKILLS_MAX", "$.privateSkills",
+                    "at most %d embedded private skills are allowed (got %d)"
+                    % (MAX_PRIVATE_SKILLS, len(skills)))
+        for i, skill in enumerate(skills):
+            sp = "$.privateSkills[%d]" % i
+            if not isinstance(skill, dict):
+                rep.err("CLAW_PRIVATE_SKILL_SHAPE", sp, "each privateSkills entry must be an object")
+                continue
+            if _is_blank(skill.get("name")):
+                rep.err("CLAW_PRIVATE_SKILL_NAME", sp + ".name",
+                        "a skill without a name is discarded entirely on import")
+            if _is_blank(skill.get("skillMdContent")):
+                rep.warn("CLAW_PRIVATE_SKILL_BLANK", sp + ".skillMdContent",
+                         "a blank SKILL.md body is dropped at runtime "
+                         "(engine warns \"blank SKILL.md content - dropped\")")
+
+
+# --------------------------- L8 Audio Agent (multiModal) ---------------------------
+# Sources: backend .../bean/entity/BotMultiModal.java (+ audio/*.java),
+#   .../helper/audio/AudioConfigValidator.java (server-side ranges/enums),
+#   .../common/enums/AudioEngineMode.java + Bot*Enum, frontend types/audio-agent.ts
+
+AUDIO_ENGINE_MODES = {"REALTIME", "ASR_LLM_TTS", "LLM_TTS"}
+AUDIO_VOICES = {"none", "alloy", "echo", "fable", "onyx", "nova", "shimmer"}
+AUDIO_QUALITY = {"DEFAULT", "HD"}                  # BotAudioModeType
+AUDIO_OUTPUT_MODES = {"TTS", "LLM", "DISABLED"}    # BotAudioOutputModeEnum
+AUDIO_INPUT_MODES = {"ASR", "LLM", "DISABLED"}     # BotAudioModeEnum
+AUDIO_CHAT_MODES = {"Q_A", "INTERRUPT"}            # BotChatModeEnum
+AUDIO_IMAGE_MODES = {"auto", "low", "high"}        # BotImageModeType
+AUDIO_RECOGNITION_MODES = {"semantic", "server", "preset"}
+AUDIO_RESPONSE_SPEEDS = {"low", "medium", "high"}
+BG_SOUND_MODES = {"DISABLED", "PRESET", "CUSTOM"}
+AUDIO_WELCOME_KEYS = ("speakingAvatar", "waitingAvatar", "welcomeAudio", "welcomeMessage")
+
+
+def check_audio_config(cfg, rep):
+    """Validate an Audio Agent config: the multiModal voice block."""
+    mm = cfg.get("multiModal")
+    if not isinstance(mm, dict):
+        rep.err("AUDIO_MULTIMODAL_MISSING", "$.multiModal",
+                "an Audio Agent must carry a multiModal block",
+                "Generate it with scripts/build_gptbots_audioagent.py")
+        return
+
+    mode = mm.get("engineMode")
+    if mode is None:
+        rep.err("AUDIO_ENGINE_MODE", "$.multiModal.engineMode",
+                "engineMode is required - without it the agent cannot start a voice session "
+                "(\"engineMode not configured\")",
+                "Set REALTIME, ASR_LLM_TTS or LLM_TTS")
+    elif mode not in AUDIO_ENGINE_MODES:
+        rep.err("AUDIO_ENGINE_MODE", "$.multiModal.engineMode",
+                "invalid engineMode: %r" % mode,
+                "Use one of: " + ", ".join(sorted(AUDIO_ENGINE_MODES)))
+
+    if _is_blank(mm.get("identityPrompt")):
+        rep.warn("AUDIO_IDENTITY_PROMPT_EMPTY", "$.multiModal.identityPrompt",
+                 "the voice session runs multiModal.identityPrompt, not the top-level prompt - "
+                 "it is empty",
+                 "Write the identity prompt here, phrased for speech (short sentences, no "
+                 "markdown, no URLs read aloud)")
+    else:
+        _check_single_brace_vars(mm.get("identityPrompt"), "$.multiModal.identityPrompt", rep)
+
+    tokens = cfg.get("maxRespTokens")
+    if tokens is not None and (isinstance(tokens, bool) or not isinstance(tokens, int) or tokens <= 0):
+        rep.err("AUDIO_MAX_RESP_TOKENS", "$.maxRespTokens",
+                "maxRespTokens must be a positive integer, got %r" % (tokens,),
+                "It must also stay below the chat model's context limit - the audio path budgets "
+                "knowledge/plugin tokens as tokensLimit - maxRespTokens")
+
+    mmi = mm.get("multiModalInput")
+    if isinstance(mmi, dict):
+        base = "$.multiModal.multiModalInput"
+        _check_enum(mmi.get("audioMode"), AUDIO_INPUT_MODES, "AUDIO_INPUT_MODE",
+                    base + ".audioMode", rep, "multiModalInput.audioMode")
+        _check_enum(mmi.get("chatMode"), AUDIO_CHAT_MODES, "AUDIO_CHAT_MODE",
+                    base + ".chatMode", rep, "multiModalInput.chatMode")
+        _check_enum(mmi.get("fileMode"), FILE_MODES, "AUDIO_FILE_MODE",
+                    base + ".fileMode", rep, "multiModalInput.fileMode")
+        _check_enum(mmi.get("imageMode"), AUDIO_IMAGE_MODES, "AUDIO_IMAGE_MODE",
+                    base + ".imageMode", rep, "multiModalInput.imageMode")
+        _check_list_enum(mmi.get("fileSupportTypes"), MULTI_MODAL_DATA_TYPES,
+                         "AUDIO_FILE_TYPES", base + ".fileSupportTypes", rep, "fileSupportTypes")
+        lang = mmi.get("sourceLang")
+        if lang is not None:
+            if not isinstance(lang, dict):
+                rep.err("AUDIO_SOURCE_LANG", base + ".sourceLang",
+                        "sourceLang must be an object containing a boolean autoDetect")
+            elif not isinstance(lang.get("autoDetect"), bool):
+                rep.err("AUDIO_SOURCE_LANG", base + ".sourceLang.autoDetect",
+                        "sourceLang.autoDetect must be a BOOLEAN, got %r" % (lang.get("autoDetect"),),
+                        'Use {"autoDetect": true} or {"autoDetect": false, "languages": ["en"]}')
+
+    mmo = mm.get("multiModalOutput")
+    if isinstance(mmo, dict):
+        base = "$.multiModal.multiModalOutput"
+        _check_enum(mmo.get("audioVoice"), AUDIO_VOICES, "AUDIO_VOICE",
+                    base + ".audioVoice", rep, "multiModalOutput.audioVoice")
+        _check_enum(mmo.get("audioMode"), AUDIO_QUALITY, "AUDIO_QUALITY",
+                    base + ".audioMode", rep, "multiModalOutput.audioMode")
+        _check_enum(mmo.get("audioModeOutput"), AUDIO_OUTPUT_MODES, "AUDIO_OUTPUT_MODE",
+                    base + ".audioModeOutput", rep, "multiModalOutput.audioModeOutput")
+        sf = mmo.get("symbolFilter")
+        if sf is not None:
+            if not isinstance(sf, dict):
+                rep.err("AUDIO_SYMBOL_FILTER", base + ".symbolFilter",
+                        "symbolFilter must be {remove: [...], replace: [{from, to}]}")
+            else:
+                for j, rule in enumerate(sf.get("replace") or []):
+                    if not isinstance(rule, dict) or "from" not in rule or "to" not in rule:
+                        rep.err("AUDIO_SYMBOL_FILTER",
+                                "%s.symbolFilter.replace[%d]" % (base, j),
+                                "each replace rule must be {from, to}")
+
+    vad = mm.get("vad")
+    if isinstance(vad, dict):
+        base = "$.multiModal.vad"
+        _claw_int_range(vad.get("pauseThresholdMs"), 0, 5000, base + ".pauseThresholdMs", rep,
+                        "AUDIO_CONFIG_RANGE", "vad.pauseThresholdMs")
+        _range(vad.get("interruptSensitivity"), 0.0, 1.0, base + ".interruptSensitivity", rep)
+        _range(vad.get("minVolume"), 0.0, 1.0, base + ".minVolume", rep)
+        _range(vad.get("activationThreshold"), 0.0, 1.0, base + ".activationThreshold", rep)
+        _check_enum(vad.get("recognitionMode"), AUDIO_RECOGNITION_MODES, "AUDIO_CONFIG_RANGE",
+                    base + ".recognitionMode", rep, "vad.recognitionMode")
+        _check_enum(vad.get("responseSpeed"), AUDIO_RESPONSE_SPEEDS, "AUDIO_CONFIG_RANGE",
+                    base + ".responseSpeed", rep, "vad.responseSpeed")
+
+    out = mm.get("output")
+    if isinstance(out, dict):
+        base = "$.multiModal.output"
+        _claw_int_range(out.get("bufferMs"), 0, 1500, base + ".bufferMs", rep,
+                        "AUDIO_CONFIG_RANGE", "output.bufferMs")
+        bg = out.get("bgSound")
+        if isinstance(bg, dict):
+            _check_enum(bg.get("mode"), BG_SOUND_MODES, "AUDIO_BG_SOUND_MODE",
+                        base + ".bgSound.mode", rep, "output.bgSound.mode")
+            _claw_int_range(bg.get("volume"), 1, 50, base + ".bgSound.volume", rep,
+                            "AUDIO_CONFIG_RANGE", "output.bgSound.volume")
+            bad = _public_http_url(bg.get("uploadUrl"))
+            if bad:
+                rep.err("AUDIO_URL", base + ".bgSound.uploadUrl", "uploadUrl %s" % bad)
+
+    cc = mm.get("callControl")
+    if isinstance(cc, dict):
+        base = "$.multiModal.callControl"
+        cold = cc.get("coldStart")
+        if isinstance(cold, dict):
+            _claw_int_range(cold.get("silenceThresholdSec"), 5, 60,
+                            base + ".coldStart.silenceThresholdSec", rep,
+                            "AUDIO_CONFIG_RANGE", "callControl.coldStart.silenceThresholdSec")
+        hangup = cc.get("hangup")
+        if isinstance(hangup, dict):
+            _claw_int_range(hangup.get("maxCallSec"), 30, 3600, base + ".hangup.maxCallSec", rep,
+                            "AUDIO_CONFIG_RANGE", "callControl.hangup.maxCallSec")
+            _claw_int_range(hangup.get("maxSilenceSec"), 1, 180, base + ".hangup.maxSilenceSec",
+                            rep, "AUDIO_CONFIG_RANGE", "callControl.hangup.maxSilenceSec")
+            _claw_int_range(hangup.get("maxSilenceCount"), 1, 100,
+                            base + ".hangup.maxSilenceCount", rep,
+                            "AUDIO_CONFIG_RANGE", "callControl.hangup.maxSilenceCount")
+
+    welcome = mm.get("welcome")
+    if isinstance(welcome, dict):
+        for key in AUDIO_WELCOME_KEYS:
+            value = welcome.get(key)
+            if value is None:
+                continue
+            if not isinstance(value, dict):
+                rep.err("AUDIO_WELCOME_SHAPE", "$.multiModal.welcome." + key,
+                        "%s must be a {language: value} map" % key)
+                continue
+            for lang, item in value.items():
+                wp = "$.multiModal.welcome.%s.%s" % (key, lang)
+                if not isinstance(item, str):
+                    rep.err("AUDIO_WELCOME_SHAPE", wp, "the value must be a string")
+                elif key != "welcomeMessage":
+                    bad = _public_http_url(item)
+                    if bad:
+                        rep.err("AUDIO_URL", wp, "media URL %s" % bad)
+
+
+# --------------------------- L9 cross-type block placement ---------------------------
+
+def check_cross_type_blocks(cfg, bot_type, rep):
+    """Warn when a type-specific block sits on the wrong botType (it is ignored on import)."""
+    if bot_type is None:
+        return
+    if cfg.get("clawRule") and bot_type != "LoopAgent":
+        rep.warn("XTYPE_CLAW_RULE", "$.clawRule",
+                 "clawRule only applies to botType=LoopAgent - it is ignored here",
+                 "Remove it, or set botType to LoopAgent")
+    if cfg.get("flowRule") and bot_type != "Flow":
+        rep.warn("XTYPE_FLOW_RULE", "$.flowRule",
+                 "flowRule only applies to botType=Flow - it is ignored here",
+                 "Remove it, or set botType to Flow")
+    if cfg.get("privateSkills") and bot_type != "LoopAgent":
+        rep.warn("XTYPE_PRIVATE_SKILLS", "$.privateSkills",
+                 "embedded private skills are a LoopAgent-only feature")
+    mm = cfg.get("multiModal")
+    if isinstance(mm, dict) and bot_type != "Audio":
+        for key in ("engineMode", "vad", "output", "callControl", "welcome", "identityPrompt"):
+            if mm.get(key):
+                rep.warn("XTYPE_AUDIO_BLOCK", "$.multiModal." + key,
+                         "`%s` is an Audio Agent field - it has no effect on botType=%s"
+                         % (key, bot_type))
+    mmi = mm.get("multiModalInput") if isinstance(mm, dict) else None
+    if isinstance(mmi, dict) and mmi.get("messageMode") and bot_type != "LoopAgent":
+        rep.warn("XTYPE_MESSAGE_MODE", "$.multiModal.multiModalInput.messageMode",
+                 "messageMode (QUEUE/APPEND) only applies to LoopAgent; other types keep it null")
+
+
+
 # ----------------------------- main flow -----------------------------
 
 def validate(cfg, raw_len):
@@ -1064,6 +1663,11 @@ def validate(cfg, raw_len):
         check_flow(cfg.get("flowRule"), rep)
         if cfg.get("workflow"):
             check_workflow_graph(cfg.get("workflow"), rep, "$.workflow")
+    elif bot_type == "LoopAgent":
+        check_claw_rule(cfg, rep)
+    elif bot_type == "Audio":
+        check_audio_config(cfg, rep)
+    check_cross_type_blocks(cfg, bot_type, rep)
     check_secrets_and_refs(cfg, rep)
     check_human_config(cfg, rep)
     return rep

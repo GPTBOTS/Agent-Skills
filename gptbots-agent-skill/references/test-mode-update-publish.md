@@ -70,3 +70,13 @@ live**; default (no `--release`) just saves the version for review in the consol
 - Agent top-level knowledge-base mounts are NOT carried by the `.bot`; the target keeps its own mounts.
 - **Third-party credentials** are backfilled by matching component/node/plugin ID on the
   target, so already-authorized components stay usable — you don't re-enter secrets.
+- **LoopAgent only — carry the target's brain model across.** `clawRule` is replaced wholesale
+  and a blank `center.content.llm.model` is *not* backfilled, so importing a file whose model is
+  empty clears the model the target had and every message then fails with `50101`. Before
+  updating an existing LoopAgent, export it, copy `clawRule.components[center].content.llm.model`
+  into the file you are about to import — or warn the user to re-pick the model and publish again.
+- **LoopAgent only — repeated imports duplicate embedded private skills.** A `.bot` whose
+  `privateSkills[]` carry a synthetic `skillId` gets a brand-new private skill created on every
+  import (a snapshot is only appended when the id already belongs to the target). Iterating on a
+  config therefore leaves stale copies behind; reuse the target-assigned `skillId` from an export,
+  or have the user clean them up.

@@ -51,6 +51,24 @@ except ImportError:
     load_prompts = load_prompt_store = None
 
 DEFAULT_MAX_TOKENS = 4096
+
+
+def DEFAULT_MULTIMODAL():
+    """Known-good multiModal block, verbatim from a real platform export.
+
+    Must be COMPLETE, not merely non-null: `fileLimit` is unboxed to an int on the
+    Open API v2 chat path, so an imported bot missing it answers 50000
+    NullPointerException on every message.
+    """
+    return {
+        "multiModalInput": {"fileLimit": 1, "fileMode": "DISABLED", "imageMode": "auto",
+                            "audioMode": "ASR", "chatMode": "Q_A", "textSwitch": True,
+                            "fileSupportTypes": None, "audioModelVersionId": None,
+                            "fileSwitch": None, "asrPrompt": None},
+        "multiModalOutput": {"textLanguage": "auto", "audioMode": "DEFAULT", "audioVoice": None,
+                             "audioModelVersionId": None, "audioModeOutput": "TTS",
+                             "textSwitch": True, "showAiGeneratedContent": False},
+    }
 # Platform built-in avatar — a custom/blank logo URL renders as a broken icon, so
 # default to the platform's bundled default avatar (override via logo=).
 DEFAULT_AGENT_LOGO = "/developer/static/images/avatar/default_avatar_202506131619.png"
@@ -79,13 +97,16 @@ def agent_config(name, prompt, first_message=None, preset_questions=None, creati
     cfg = {"formatVersion": "1.0", "exportType": "BOT",
            "exportTime": int(datetime.now(timezone.utc).timestamp() * 1000),  # epoch ms (Long) — ISO strings are rejected on import
            "name": name, "botType": bot_type,
-           # Anti-NPE backfill: import copies `multiModal` verbatim (no default), but console
-           # auto-save dereferences multiModalForm.multiModalInput.chatMode without a null
-           # check (regression 2025-12-02) → a .bot imported without multiModal 500s on every
-           # auto-save. Empty multiModalInput = non-null VO with null enum fields (safe).
-           # Don't guess enum values; override via **extra with a block from a real export.
+           # Anti-NPE backfill: import copies `multiModal` verbatim (no default) and two
+           # backend paths dereference it without a null check — console auto-save reads
+           # multiModalInput.chatMode (500 on every save), and Open API v2 chat UNBOXES
+           # multiModalInput.getFileLimit() into an int, so a missing fileLimit makes every
+           # POST /v2/conversation/message answer 50000 NullPointerException. An empty
+           # multiModalInput therefore imports fine and is dead on the API — ship the full
+           # known-good block below (verbatim from a real export; don't guess enum values,
+           # override via **extra with a block from an export of your own).
            "logo": DEFAULT_AGENT_LOGO,   # platform default avatar (override via logo= / extra)
-           "multiModal": {"multiModalInput": {}},
+           "multiModal": DEFAULT_MULTIMODAL(),
            "chatModelVersionId": "", "creativityLevel": creativity,
            "maxRespTokens": int(max_tokens), "prompt": prompt}
     if first_message is not None:

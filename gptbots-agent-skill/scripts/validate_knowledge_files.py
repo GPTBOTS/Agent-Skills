@@ -39,8 +39,14 @@ import sys
 MD_IMAGE_RE = re.compile(r"!\[[^\]]*\]\(\s*(?P<url>[^)\s]+)\s*\)")
 # A bare URL that points at an image file (should have been wrapped as ![](...)).
 BARE_IMAGE_URL_RE = re.compile(r"(?<!\()\bhttps?://[^\s)]+\.(?:png|jpe?g|gif|webp|bmp|svg)\b", re.I)
-# Placeholder left behind instead of a real image.
-IMAGE_PLACEHOLDER_RE = re.compile(r"(图片地址|图片如下|见图|\(?\s*(image|图片)\s*(here|here\.)?\s*\)?)", re.I)
+# Placeholder left behind instead of a real image. Source docs often use a CJK label
+# ("image URL" / "image below" / "see image") instead of embedding the picture; those
+# labels are written as \u escapes so this file stays ASCII-only.
+_IMG_LABEL_CJK = "\u56fe\u7247\u5730\u5740|\u56fe\u7247\u5982\u4e0b|\u89c1\u56fe"
+_IMG_WORD_CJK = "\u56fe\u7247"
+IMAGE_PLACEHOLDER_RE = re.compile(
+    "(" + _IMG_LABEL_CJK + r"|\(?\s*(image|" + _IMG_WORD_CJK + r")\s*(here|here\.)?\s*\)?)",
+    re.I)
 # The internal Q/A join token the backend uses; must not appear inside a field.
 QA_JOIN_TOKEN = "---***---"
 

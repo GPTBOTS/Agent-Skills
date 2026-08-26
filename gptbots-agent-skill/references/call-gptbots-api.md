@@ -2,6 +2,16 @@
 
 > Reference for the `GPTBots Skill` workflow when the user wants to **drive a published Agent / Workflow via the public Open API** — scheduled triggering, batch test-case generation and regression evaluation, data queries, knowledge base management, RAG testing, etc. **Use only the public API**; never call any internal/console endpoint. Executed via bash + curl.
 
+## Which credential? (read this first)
+This file covers the **Agent / Workflow API Key** (`Authorization: Bearer <key>`) — chat,
+workflow runs, knowledge, database, analytics, diagnostics. Two neighbouring families use a
+*different* credential or permission:
+
+- **Creating** Agents/Workflows/Tools/MCPs/Skills, listing orgs, and looking up **model
+  version IDs** → account-level **DevKey/DevSecret** Basic auth → `org-devkey-api.md`.
+- **Updating / publishing / rolling back** an existing target's version → the target's API
+  Key **with version-management permission** (a console-only grant) → `version-manage-api.md`.
+
 ## Authentication and base URL
 - Base URL follows the data-center region: `https://api-${endpoint}.gptbots.ai/`
   - `sg` = Singapore (**default** when no region is specified) → `https://api-sg.gptbots.ai/`
@@ -36,6 +46,10 @@ Returns the entity type (agent/workflow) and id; confirm the key is valid before
 | [Agent Quality](https://www.gptbots.ai/docs/api-reference/conversation-api/quality) | POST | `/v1/message/quality` | Rate a reply's resolution quality (NONE / UNRESOLVED / PARTIALLY_RESOLVED / FULLY_RESOLVED). |
 | [Human handoff service](https://www.gptbots.ai/docs/api-reference/conversation-api/human-handoff-service) | POST | `/v1/human/message/receive`, `/v1/human/close` | Agent→user reply + close conversation (plus 3 developer-hosted webhooks: establish / chat / close). |
 | [Webhook V2 (receive)](https://www.gptbots.ai/docs/api-reference/conversation-api/webhook-receives-messages-v2) | POST | _(developer-hosted URL)_ | Your endpoint that GPTBots POSTs AI/human replies + usage/credit data to. |
+| [List Agent Versions](https://www.gptbots.ai/docs/api-reference/conversation-api/list-agent-versions) | GET | `/v1/agent/version/list` | Version history (`version`, `version_status`, `create_time`/`release_time`, `creator_email`). Needs version-management permission — see `version-manage-api.md`. |
+| [Import Agent Version](https://www.gptbots.ai/docs/api-reference/conversation-api/import-agent-version) | POST | `/v1/agent/version/import` | Replace the config from a `.bot` and save a new version. |
+| [Release Agent Version](https://www.gptbots.ai/docs/api-reference/conversation-api/release-agent-version) | POST | `/v1/agent/version/release` | Publish a version live. |
+| [Rollback Agent Version](https://www.gptbots.ai/docs/api-reference/conversation-api/rollback-agent-version) | POST | `/v1/agent/version/rollback` | Copy an earlier version into a new one, optionally publishing it. |
 
 ### Knowledge API
 | Name | Method | Path | Description |
@@ -61,6 +75,11 @@ Returns the entity type (agent/workflow) and id; confirm the key is valid before
 |---|---|---|---|
 | [Run Workflow](https://www.gptbots.ai/docs/api-reference/workflow-api/workflow-call-api) | POST | `/v1/workflow/invoke` | Invoke a workflow with inputs; sync/async modes + optional webhook callbacks. |
 | [Query Workflow Result](https://www.gptbots.ai/docs/api-reference/workflow-api/workflow-query-api-result) | POST | `/v1/workflow/query/result` | Retrieve a workflow run's result by its workflow run ID. |
+| [Get Workflow Run List](https://www.gptbots.ai/docs/api-reference/workflow-api/workflow-run-logs) | GET | `/v1/workflow/run/logs` | Paginated run log of the key's Workflow (`log_id`, `workflow_run_id`, `input`, `output`). Required: `conversation_type` (`ALL`/`API`/`AGENT`/`SHARE`/`C_WORKFLOW` — `DEBUG` runs are excluded), `start_time`/`end_time` (epoch ms), `page`, `page_size` (10–100); optional `user_id`. |
+| [List Workflow Versions](https://www.gptbots.ai/docs/api-reference/workflow-api/list-workflow-versions) | GET | `/v1/workflow/version/list` | Version history. Needs version-management permission — see `version-manage-api.md`. |
+| [Import Workflow Version](https://www.gptbots.ai/docs/api-reference/workflow-api/import-workflow-version) | POST | `/v1/workflow/version/import` | Replace the config from a `.flow` and save a new version. |
+| [Release Workflow Version](https://www.gptbots.ai/docs/api-reference/workflow-api/release-workflow-version) | POST | `/v1/workflow/version/release` | Publish a version live. |
+| [Rollback Workflow Version](https://www.gptbots.ai/docs/api-reference/workflow-api/rollback-workflow-version) | POST | `/v1/workflow/version/rollback` | Copy an earlier version into a new one, optionally publishing it. |
 
 ### Database API
 | Name | Method | Path | Description |
@@ -95,10 +114,28 @@ Returns the entity type (agent/workflow) and id; confirm the key is valid before
 | [Get Agent Conversation Credit List](https://www.gptbots.ai/docs/api-reference/analytics-api/agent-conversation-credits) | GET | `/v1/account/agent/conversation/credits` | Per-conversation credit use (last 30 days). |
 | [Get Workflow Run Credit List](https://www.gptbots.ai/docs/api-reference/analytics-api/workflow-run-credits) | GET | `/v1/account/workflow/run/credits` | Per-run workflow credit use (last 30 days). |
 
-### Account API
+### Account API — **DevKey/DevSecret Basic auth, not Bearer** (full details: `org-devkey-api.md`)
 | Name | Method | Path | Description |
 |---|---|---|---|
-| [Get Bot Information](https://www.gptbots.ai/docs/api-reference/account-api/get-bot-information) | GET | `/v1/bot/detail` | Basic Agent info (id, name, configuration, operational parameters). |
+| [Get Bot Information](https://www.gptbots.ai/docs/api-reference/account-api/get-bot-information) | GET | `/v1/bot/detail` | Basic Agent info (id, name, configuration, operational parameters). _(Bearer, unlike the rest of this table.)_ |
+| [List Organizations](https://www.gptbots.ai/docs/api-reference/account-api/list-organizations) | GET | `/v1/org/list` | Orgs this account can reach → `org_id`. |
+| [List Models](https://www.gptbots.ai/docs/api-reference/account-api/list-models) | GET | `/v1/model/list` | Model **version IDs** (`modelId`) by capability→vendor; `org_id`, `agent_type` (`AGENT`/`FLOW_AGENT`/`LOOP_AGENT`/`WORKFLOW`). 60 req/min. |
+| [Create Tool](https://www.gptbots.ai/docs/api-reference/account-api/create-tool) | POST | `/v1/org/tool/create` | Create a Tool; `api_schema` (OpenAPI JSON string) generates its actions. |
+| [Update Tool](https://www.gptbots.ai/docs/api-reference/account-api/update-tool) | PUT | `/v1/org/tool/update` | Update a Tool's basics, schema and auth block. |
+| [List Tools / MCPs](https://www.gptbots.ai/docs/api-reference/account-api/list-tools-mcps) | GET | `/v1/org/tool/list` | Org Tools and MCPs (`plugin_type`, `available`, `action_count`). |
+| [Delete Tool](https://www.gptbots.ai/docs/api-reference/account-api/delete-tool) | POST | `/v1/org/tool/delete` | Delete a Tool. |
+| [Create MCP](https://www.gptbots.ai/docs/api-reference/account-api/create-mcp) | POST | `/v1/org/mcp/create` | Create an MCP (`SSE`/`STREAMABLE_HTTP`) and pull its tools. |
+| [Refresh MCP Tools](https://www.gptbots.ai/docs/api-reference/account-api/refresh-mcp-tools) | POST | `/v1/org/mcp/refresh` | Re-pull an MCP server's tools into actions. |
+| [Delete MCP](https://www.gptbots.ai/docs/api-reference/account-api/delete-mcp) | POST | `/v1/org/mcp/delete` | Delete an MCP. |
+| [Create Skill](https://www.gptbots.ai/docs/api-reference/account-api/create-skill) | POST | `/v1/org/skill/create` | Create an org-level or Agent-private Skill (`description` must include `en_US`). |
+| [Import Skill Package](https://www.gptbots.ai/docs/api-reference/account-api/import-skill-package) | POST | `/v1/org/skill/import` | Upload a `.zip`/`.skill` package as an org Skill. |
+| [Import Skill Package by URL](https://www.gptbots.ai/docs/api-reference/account-api/import-skill-package-url) | POST | `/v1/org/skill/import/url` | Same, from an allow-listed public URL. |
+| [List Skills](https://www.gptbots.ai/docs/api-reference/account-api/list-skills) | GET | `/v1/org/skill/list` | Org Skills, filterable by owner/category/enable. |
+| [Delete Skill](https://www.gptbots.ai/docs/api-reference/account-api/delete-skill) | POST | `/v1/org/skill/delete` | Delete a Skill (cascades drafts + version snapshots). |
+| [Precheck Agent Import](https://www.gptbots.ai/docs/api-reference/account-api/precheck-agent-import) | POST | `/v1/org/agent/import/precheck` | Parse + security-scan a `.bot`; writes nothing. |
+| [Import Agent](https://www.gptbots.ai/docs/api-reference/account-api/import-agent) | POST | `/v1/org/agent/import` | **Create** an Agent from a `.bot` (returns a one-time `api_key`, version management off). |
+| [Precheck Workflow Import](https://www.gptbots.ai/docs/api-reference/account-api/precheck-workflow-import) | POST | `/v1/org/workflow/import/precheck` | Parse + security-scan a `.flow`; writes nothing. |
+| [Import Workflow](https://www.gptbots.ai/docs/api-reference/account-api/import-workflow) | POST | `/v1/org/workflow/import` | **Create** a Workflow from a `.flow`. |
 
 ### History API (legacy v1; prefer the v2 equivalents above)
 | Name | Method | Path | Description |
@@ -277,6 +314,7 @@ The public API has *no dedicated batch-evaluation endpoint*; orchestrate via the
 
 ## Playbook: Agent data queries
 - Conversation/message history: `GET /v2/messages` (by `conversation_id`), `GET /v1/bot/conversation/page` (pagination `pageSize` 10–100).
+- Workflow runs: `GET /v1/workflow/run/logs?conversation_type=API&start_time=<ms>&end_time=<ms>&page=1&page_size=100` — the Workflow is identified by the API key, so no `workflow_id`. `input`/`output` come back as JSON **strings**; parse them before comparing. `DEBUG` (console test-run) rows are never returned, so a workflow you only ever test-ran looks empty here.
 - Usage/credits: `GET /v1/account/bill/page`, `/v1/account/bill/total` (require `start_time`/`end_time`, epoch ms).
 
 ## Playbook: knowledge base management
@@ -286,7 +324,7 @@ The public API has *no dedicated batch-evaluation endpoint*; orchestrate via the
 - Update/delete: `PUT /v1/bot/doc/text/update`, `DELETE /v1/bot/doc/batch/delete`.
 
 ## Playbook: Agent ops diagnostics — trace a conversation via LogTree
-The user reports a bad/slow/failed reply and gives you a **user ID, anonymous ID, or conversation ID**; drill down to the failing component. This is the core loop for an ops/运维 Agent.
+The user reports a bad/slow/failed reply and gives you a **user ID, anonymous ID, or conversation ID**; drill down to the failing component. This is the core loop for an ops Agent.
 
 **Step 1 — locate the conversation (skip if you already have `conversation_id`).**
 - Given a **user ID**: `GET /v1/bot/conversation/page?conversation_type=ALL&user_id=<id>&start_time=<ms>&end_time=<ms>&page=1&page_size=100`. Each row has `conversation_id`, `subject`, `recent_chat_time`, `message_count` — pick the conversation in question (usually most recent, or matched by `subject`/time).

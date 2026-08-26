@@ -76,10 +76,17 @@ DEFAULT_AGENT_LOGO = "/developer/static/images/avatar/default_avatar_20250613161
 # Seeded on every new Audio Agent (BotManageService): symbols that must not be
 # read aloud, and bracket PAIRS replaced by a single space so the TTS pauses
 # instead of pronouncing "left parenthesis".
-DEFAULT_SYMBOL_REMOVE = ["≈", "*", "&", "^", "_", "~", "|", "#", "@", "<", ">",
-                         "{", "}", "＝", "＋"]
-DEFAULT_SYMBOL_REPLACE_PAIRS = ["《》", "【】", "〖〗",
-                                "[]", "()", "（）"]
+# The non-ASCII entries are written as \u escapes so this file stays ASCII-only;
+# they are the exact code points the platform seeds, do not "simplify" them.
+DEFAULT_SYMBOL_REMOVE = ["\u2248", "*", "&", "^", "_", "~", "|", "#", "@", "<", ">",
+                         "{", "}",
+                         "\uff1d",           # fullwidth equals sign
+                         "\uff0b"]           # fullwidth plus sign
+DEFAULT_SYMBOL_REPLACE_PAIRS = ["\u300a\u300b",   # CJK double angle brackets
+                                "\u3010\u3011",   # CJK black lenticular brackets
+                                "\u3016\u3017",   # CJK white lenticular brackets
+                                "[]", "()",
+                                "\uff08\uff09"]   # fullwidth parentheses
 
 
 def _one_of(value, allowed, label):

@@ -225,7 +225,17 @@ def check_top_level(cfg, rep):
         rep.err("L0_EXPORT_TYPE", "$.exportType", f"Invalid exportType: {export_type}",
                 "Set it to BOT or WORKFLOW")
     bot_type = cfg.get("botType")
-    if bot_type not in BOT_TYPES:
+    if bot_type == "Claw":
+        # Historical alias, still accepted by the backend on read. Report it, but keep
+        # validating the file AS a LoopAgent — dropping every LoopAgent check would blind
+        # us on exactly the population most likely to carry plain-Agent residue and a
+        # blank brain model: old files nobody has re-exported since the rename.
+        rep.err("L0_BOT_TYPE", "$.botType",
+                "botType=Claw is the historical alias of LoopAgent",
+                "Rename it to LoopAgent — the backend still reads Claw, but always emit "
+                "LoopAgent. The file is validated as a LoopAgent below")
+        bot_type = "LoopAgent"
+    elif bot_type not in BOT_TYPES:
         rep.err("L0_BOT_TYPE", "$.botType", f"Invalid botType: {bot_type}",
                 "Set it to QuestionAnswer / Flow / LoopAgent / Audio / Workflow")
     # exportType / botType consistency
@@ -1105,6 +1115,26 @@ CLAW_RETIRED_KNOWLEDGE_KEYS = ("customKnowledgeType", "enhancementMessageSwitch"
 # Fields the engine does not consume at all - configuring them changes nothing.
 CLAW_INERT_KEYEVENT_KEYS = ("titleStrategy", "autoCreateOnSpawn", "autoResolveIdleDays",
                             "slaHighMs", "slaNormalMs", "keyEventTypes", "triggerPrompt")
+# LoopAgent brain model. Its models come from the AMH LLM gateway; a valid id comes
+# from GET /v1/model/list?org_id=<org>&agent_type=LOOP_AGENT (that filter is required -
+# only it returns gateway ids) or from an export of the target agent. This is the
+# pinned default the builder emits when neither is available.
+CLAW_DEFAULT_MODEL = "0ec52e3e7dfc000f9470eb15"
+CLAW_DEFAULT_MODEL_NAME = "GPT-5.6-Luna"
+# Top-level fields from the plain-Agent (QuestionAnswer) schema. A LoopAgent's model
+# and sampling params live in clawRule -> center.content.llm; the backend neither
+# reads nor backfills these bot-level copies and omits them from LoopAgent exports,
+# so anything found here is residue from a hand-edit or an older generator.
+CLAW_PLAIN_AGENT_FIELDS = {
+    "chatModelVersionId": "the brain model is clawRule center.content.llm.model",
+    "modelDynamicParams": "sampling params are clawRule center.content.llm.modelDynamicParams",
+    "creativityLevel": "temperature is a plain-Agent field and is not read here",
+    "maxRespTokens": "the response cap is clawRule center.content.llm.maxTokens",
+    "reasoningEffort": "reasoning is driven by the LoopAgent engine, not a bot-level field",
+    "reasoningEnabled": "reasoning is driven by the LoopAgent engine, not a bot-level field",
+    "showReasoning": "reasoning is driven by the LoopAgent engine, not a bot-level field",
+    "databaseTableIds": "data tables are picked in the ClawDB satellite (tableIds)",
+}
 _HEX24_RE = re.compile(r"^[0-9a-fA-F]{24}$")
 _PRIVATE_HOST_RE = re.compile(
     r"^(localhost|127\.|0\.0\.0\.0$|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2[0-9]|3[01])\.)")
@@ -1169,25 +1199,35 @@ def _check_claw_center(center, rep):
                 "center.content.llm must be an object {model, baseUrl, maxTokens}")
     else:
         model = llm.get("model")
-        if _is_blank(model):
+        # Not `_is_blank`: 0 / [] / {} / false are just as un-routable as "" and hit the
+        # identical failure (50101, and the target's model wiped on import-as-version),
+        # so anything that is not a non-empty string is the empty case.
+        if not isinstance(model, str) or not model.strip():
             # fixLoopAgentCenterModel returns early on a blank id — it is NOT backfilled,
             # on either import path. The imported agent therefore has no brain model and
             # the engine fails the first frame with 50101 "No LLM credentials". Worse, on
-            # import-as-version this OVERWRITES the model the target already had.
-            rep.warn("CLAW_MODEL_EMPTY", base + ".content.llm.model",
-                     "the brain model is empty — the import does not backfill it (a blank id "
-                     "is returned early, unlike a stale one), so the agent answers 50101 "
-                     "'No LLM credentials' on the first message, and importing into an "
-                     "EXISTING LoopAgent wipes the model that target had",
-                     "Copy the gateway model_version_id out of an export of the target agent, "
-                     "or tell the user to re-pick the model in the console (设置页 → 智能体大脑 "
-                     "→ 模型) and publish again after importing")
-        if isinstance(model, str) and model.strip() and not _HEX24_RE.match(model.strip()):
+            # import-as-version this OVERWRITES the model the target already had. There is
+            # no recovery inside the file, so this is an error, not a warning.
+            rep.err("CLAW_MODEL_EMPTY", base + ".content.llm.model",
+                    "the brain model is empty (%r is not a non-empty model_version_id string) "
+                    "— the import does not backfill it (a blank id "
+                    "is returned early, unlike a stale one), so the agent answers 50101 " % (model,) +
+                    "'No LLM credentials' on the first message, and importing into an "
+                    "EXISTING LoopAgent wipes the model that target had",
+                    "Updating an existing LoopAgent: copy the model_version_id from "
+                    "clawRule center.content.llm.model in an export of that agent. New agent: "
+                    "query one with GET /v1/model/list?org_id=<org>&agent_type=LOOP_AGENT "
+                    "(the AMH gateway catalogue; that filter is required), or fall back to "
+                    "the pinned default %s (%s)" % (CLAW_DEFAULT_MODEL, CLAW_DEFAULT_MODEL_NAME))
+        elif not _HEX24_RE.match(model.strip()):
             rep.warn("CLAW_MODEL_NAME_AS_ID", base + ".content.llm.model",
                      "%r does not look like an AMH gateway model_version_id (24-hex opaque id)"
                      % model,
-                     "Leave it blank so the import backfills the platform default - a readable "
-                     "model name cannot be routed by the gateway (first frame fails with 50101)")
+                     "A readable model name cannot be routed by the gateway (first frame fails "
+                     "with 50101). Use an id from GET /v1/model/list?agent_type=LOOP_AGENT or "
+                     "from an export of the target agent, or the pinned default %s (%s) — "
+                     "never a name, and never blank"
+                     % (CLAW_DEFAULT_MODEL, CLAW_DEFAULT_MODEL_NAME))
         bad = _public_http_url(llm.get("baseUrl"))
         if bad:
             rep.err("CLAW_BASEURL_SSRF", base + ".content.llm.baseUrl",
@@ -1315,7 +1355,12 @@ def _check_claw_skills(content, path, rep):
 
 
 def check_claw_rule(cfg, rep):
-    """Validate a LoopAgent config: the clawRule topology plus its LoopAgent-only top-level fields."""
+    """Validate a LoopAgent config: its LoopAgent-only top-level fields, then the clawRule topology."""
+    # Top-level fields FIRST. They do not depend on the topology, and a file whose clawRule
+    # is missing or malformed is precisely the one most likely to carry plain-Agent residue
+    # — a QuestionAnswer bot relabelled LoopAgent by hand. Reporting only CLAW_RULE_MISSING
+    # and returning would hide every one of those findings.
+    check_claw_top_level(cfg, rep)
     rule = cfg.get("clawRule")
     if not isinstance(rule, dict):
         rep.err("CLAW_RULE_MISSING", "$.clawRule",
@@ -1422,6 +1467,32 @@ def check_claw_rule(cfg, rep):
                 rep.warn("CLAW_INERT_FIELD", path + ".maxWaitMinutes",
                          "maxWaitMinutes is persisted but never consumed by the engine",
                          "Remove it, and do not promise the behaviour to the user")
+
+
+def check_claw_top_level(cfg, rep):
+    """LoopAgent top-level fields — independent of the clawRule topology (see check_claw_rule)."""
+    # --- plain-Agent residue on a LoopAgent -----------------------------------
+    # These are the fields a QuestionAnswer .bot carries. On a LoopAgent they are
+    # never read and never backfilled, so at best they are dead config that
+    # contradicts the clawRule the engine actually runs on. `chatModelVersionId` is
+    # the one that also breaks something: the Agent detail API derived
+    # supportImageRecognition from it, so the empty string an older generator wrote
+    # greyed out attachment upload on share pages and the widget.
+    for key, why in sorted(CLAW_PLAIN_AGENT_FIELDS.items()):
+        if key not in cfg:
+            continue
+        if key == "chatModelVersionId":
+            rep.err("CLAW_PLAIN_AGENT_FIELD", "$." + key,
+                    "`chatModelVersionId` is a plain-Agent field and must not appear on a "
+                    "LoopAgent - the backend neither reads nor backfills it, and the Agent "
+                    "detail API derived supportImageRecognition from it, so writing it here "
+                    "(even as \"\") greys out attachment upload on share pages and the widget",
+                    "Delete the key - a backend LoopAgent export omits it entirely. " + why)
+        else:
+            rep.warn("CLAW_PLAIN_AGENT_FIELD", "$." + key,
+                     "`%s` is a plain-Agent field with no effect on a LoopAgent - it is dead "
+                     "config that contradicts the clawRule the engine actually reads" % key,
+                     "Delete the key - a backend LoopAgent export omits it entirely. " + why)
 
     # --- LoopAgent-only top-level fields -------------------------------------
     if not _is_blank(cfg.get("prompt")):

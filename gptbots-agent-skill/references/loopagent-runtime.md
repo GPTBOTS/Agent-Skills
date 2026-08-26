@@ -78,18 +78,19 @@ Every one of these fails **silently**: the tool simply is not registered, and th
 
 Credits are deducted from the gateway-reported `totalCredits` after the turn (never token × price locally), and settlement never blocks the reply. The balance gate runs **before** the turn — insufficient balance or member monthly cap → `COIN_NOT_ENOUGH` and the turn does not run. Plugin / MCP calls bill separately per action; workflow execution bills to the workflow's owning organization. Two reporting quirks worth quoting to users: main-turn charges are always bucketed as `CONSUME_GPT_3_5` regardless of the actual model (the amount is right, only the label is generic), and cache savings are folded into the total rather than itemised. Debug chat is a real turn and is billed. Table quota (`databaseTableLimit`, default 20) and API RPM are shared with regular Agents.
 
-`BotMode` (`FORMAL` / `TEST`) is fixed at creation and cannot be changed — only `TEST` bots accept the Open-API agent update/publish calls (`403200 AGENT_NOT_TEST_MODE` otherwise). This is exactly what `scripts/publish_gptbots.py` needs.
+The Open-API version endpoints (`/v1/agent/version/import|release|rollback|list`) require an **API Key with version-management permission**, which is created manually in the console (target → Integration/API). A key auto-created by the org import API has it disabled (`version_manage_enabled: false`) and answers HTTP `403`. `BotMode` (`FORMAL` / `TEST`) is fixed at creation; some targets still gate on it and answer `403200 AGENT_NOT_TEST_MODE`. This is exactly what `scripts/publish_gptbots.py` needs — see `./version-manage-api.md`.
 
 ## 7. Error codes
 
 | code | meaning | cause / fix |
 |---|---|---|
-| `50101` | No LLM credentials (engine) | AMH gateway base-url/api-key missing, or the selected model id does not resolve in the gateway catalogue |
+| `50101` | No LLM credentials (engine) | AMH gateway base-url/api-key missing, or `center.content.llm.model` is blank / stale / a readable name instead of a 24-hex `model_version_id`, or an id that is not from the **AMH gateway**. Get a valid one with `GET /v1/model/list?org_id=…&agent_type=LOOP_AGENT` (`gptbots_org_api.py models --agent-type LOOP_AGENT`), or carry the target agent's own id across from its export; last resort, the pinned default `0ec52e3e7dfc000f9470eb15` (GPT-5.6-Luna) |
 | `40001` (engine) | `botRule invalid` | `clawRule` missing the center node or structurally broken. **Java's 40001 is rate-limiting — different thing** |
 | `40300` (engine) | ClawAgent disabled | `center.content.enabled = false` |
 | `-50000` | InternalServerError wrapper | the real code is in `payload.originalCode`; tokens already spent are still billed |
 | `COIN_NOT_ENOUGH` | balance gate | org balance or member monthly cap |
-| `403200` | `AGENT_NOT_TEST_MODE` | Open-API update/publish against a `FORMAL` bot |
+| `403` (HTTP) | insufficient permission | the API Key has no **version-management** permission — create one in the console (target → Integration/API) |
+| `403200` | `AGENT_NOT_TEST_MODE` | Open-API update/publish against a bot whose mode still gates it |
 | `40343` | `TOOL_NOT_AVAILABLE` | tool/workflow not bound to the bot, or the master switch is off |
 | `403215` | `SKILL_UPDATE_CONFLICT` | optimistic-lock conflict from concurrent skill editing — reload and retry |
 | `SERVICE_NOT_READY` | table / chart LLM unavailable | two independent dictionaries: `CHAT_DATABASE_MODEL_VERSION` (query) and `CHAT_CHART_GENERATION_MODEL_VERSION` (chart) |

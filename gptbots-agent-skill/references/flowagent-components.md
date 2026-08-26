@@ -306,7 +306,7 @@ before `Input` on `Condition` nodes. `LongMemory`/`ShortMemory`/`Plugin` are pre
 display label `"name(title)"`. Knowledge retrieval is NOT a message — set `dataEnable: true` and
 `datasetMessages: [{… type:"Content" …}]` on the consuming LLM (the builder's `reads_kb=True`).
 The builder assembles all of this automatically; the validator flags `content`-keyed prompts as
-`MSG_CONTENT_FIELD` and an empty Role as `MSG_ROLE_EMPTY`.
+`MSG_NONCANONICAL` and an empty Role as `MSG_ROLE_EMPTY`.
 
 | `type` | Key fields it uses (beyond the common ones) | Outputs |
 |---|---|---|
@@ -369,7 +369,7 @@ Component-nested:
 > ⚠️ **Duplicate exception edges are a known import artifact**: platform round-trips have been
 > observed duplicating a Condition's exception exit (an old `Exception` entry with
 > `condition=null` + a new `_exception` entry, same id/sourceHandle). The engine tolerates it
-> (nextComponents is pass-through) but it's dirty data — the validator warns as `EDGE_DUP_LINE`;
+> (nextComponents is pass-through) but it's dirty data — the validator warns as `EDGE_DUP_HANDLE`;
 > remove the duplicates before re-delivery.
 
 ---

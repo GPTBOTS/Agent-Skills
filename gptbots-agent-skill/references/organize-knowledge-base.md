@@ -27,7 +27,8 @@ to cloud storage and embedded as `![](https://…)`. So when you hand-curate doc
 - Keep the real heading structure (`#`, `##`, `###`) — it drives sensible chunk boundaries.
 - Keep lists, tables, and code blocks as Markdown; do not flatten them into prose.
 - Every image must be a Markdown image with a **real URL**: `![alt](https://…)`. Never leave a
-  bare `图片地址: https://…` line or a placeholder like "(there was an image here)".
+  bare `<image-url-label>: https://…` line (a CJK "image URL" caption, say) or a placeholder
+  like "(there was an image here)".
 
 ### Table (`SPREADSHEET`)
 The platform slices a table into **one chunk per data row**, keeping the header so each row
@@ -139,7 +140,7 @@ recall to a smaller, more relevant set:
 |---|---|
 | Rendering record/table data as a Markdown table for a Document import | Emit a clean `.csv`/`.xlsx` and use the **Table** type (one chunk per row) |
 | Forcing every row into a Q&A pair | Use a Table when the data is record-shaped |
-| Bare image URL in a cell or doc (`图片地址: http…`) | Wrap as `![](http…)` so the image is preserved and tied to its row/section |
+| Bare image URL in a cell or doc (`<image-url-label>: http…`) | Wrap as `![](http…)` so the image is preserved and tied to its row/section |
 | Silently choosing one value when rows conflict | Keep both in a `*-conflicts.csv` and flag for the user |
 | Rewriting / summarizing / adding content not in the source | Preserve original wording; only restructure |
 | Q&A CSV with empty question or answer, or wrong header | Header must be exactly `question,answer`; both cells non-empty |

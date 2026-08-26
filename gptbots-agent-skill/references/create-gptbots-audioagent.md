@@ -33,7 +33,7 @@ Write it for **speech, not for reading**:
 
 ## 4. `multiModal` block reference
 
-All ranges below are enforced server-side by `AudioConfigValidator` (`AUDIO_CONFIG_PARAM_RANGE` on violation).
+All ranges below are enforced server-side by `AudioConfigValidator` (`AUDIO_CONFIG_RANGE` on violation).
 
 ```jsonc
 "multiModal": {
@@ -64,9 +64,10 @@ All ranges below are enforced server-side by `AudioConfigValidator` (`AUDIO_CONF
     "textSwitch": true,
     "showAiGeneratedContent": false,
     "symbolFilter": {                    // TTS text cleaning (see below)
-      "remove": ["≈","*","&","^","_","~","|","#","@","<",">","{","}","＝","＋"],
-      "replace": [{"from":"《》","to":" "}, {"from":"【】","to":" "}, {"from":"[]","to":" "},
-                  {"from":"()","to":" "}, {"from":"（）","to":" "}]
+      "remove": ["\u2248","*","&","^","_","~","|","#","@","<",">","{","}","\uff1d","\uff0b"],
+      "replace": [{"from":"\u300a\u300b","to":" "}, {"from":"\u3010\u3011","to":" "}, {"from":"[]","to":" "},
+                  {"from":"()","to":" "}, {"from":"\uff08\uff09","to":" "}]
+      // \uff1d/\uff0b = fullwidth = and +; \u300a\u300b / \u3010\u3011 / \uff08\uff09 = CJK bracket pairs.
     }
   },
 
@@ -148,7 +149,7 @@ Exit code 0 before delivery.
 
 ## 8. Delivery
 
-Return the `.bot` path, then tell the user: developer space → **Create Agent → Import**; or `scripts/publish_gptbots.py` for a test-mode target. Call out explicitly which **model slots they must select after import** for the engine mode you chose (§2), plus any welcome media they need to upload — those are the two things that make an imported Audio Agent fail to start a session.
+Return the `.bot` path, then tell the user: developer space → **Create Agent → Import**; or `scripts/gptbots_org_api.py import-agent` to create it from the file via the account API, or `scripts/publish_gptbots.py` to update an existing Audio Agent (that key needs version-management permission). Call out explicitly which **model slots they must select after import** for the engine mode you chose (§2), plus any welcome media they need to upload — those are the two things that make an imported Audio Agent fail to start a session.
 
 ## References
 - Shared Agent fields: `./create-gptbots-agent.md`

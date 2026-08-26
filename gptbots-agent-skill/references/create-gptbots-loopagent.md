@@ -28,10 +28,18 @@ Consequences for config authoring:
   "name": "…", "botType": "LoopAgent",
   "logo": "/developer/static/images/avatar/default_avatar_202506131619.png",
   "prompt": "",                          // MUST stay empty — identity lives in clawRule (see §4)
-  "chatModelVersionId": "",              // leave blank; backend backfills the default chat model
-  "multiModal": {                        // mandatory (auto-save NPE guard, see SKILL.md)
-    "multiModalInput": { "messageMode": "QUEUE" }
-  },
+  // NO chatModelVersionId (nor modelDynamicParams / creativityLevel / maxRespTokens /
+  // reasoningEffort / showReasoning / reasoningEnabled / databaseTableIds): those belong
+  // to the plain-Agent schema. A LoopAgent's model and sampling params live in clawRule's
+  // ClawCenter content.llm, and the backend neither reads nor backfills the bot-level
+  // copies on import. Writing "" into chatModelVersionId is what made share pages grey
+  // out attachment upload — the detail API derived supportImageRecognition from it.
+  // Backend exports omit all of them entirely. (`CLAW_PLAIN_AGENT_FIELD` — see §3)
+  "multiModal": {                        // mandatory AND complete — a bare {"multiModalInput": {}}
+    "multiModalInput": {                 // imports fine and then 500s/50000s at runtime
+      "fileLimit": 1, "messageMode": "QUEUE"  /* + the rest of the known-good block */
+    }
+  },                                     // emit it with the builder; do not hand-write the enums
   "shortTermMemory": true, "shortTermMemoryRound": 30,
   "longTermMemory": false, "memoryEnable": true,   // both meaningless for LoopAgent — keep the defaults
   "toolsEnable": true, "workflowEnable": false,
@@ -48,7 +56,7 @@ Consequences for config authoring:
 
 | # | id | type | purpose |
 |---|---|---|---|
-| — | `center` | `ClawCenter` | model + loop limits + the 3 editable prompts. **Mandatory.** |
+| — | `center` | `ClawCenter` | model + loop limits + the persona prompt (the only editable one — see §4). **Mandatory.** |
 | 0 | `keyEvent-1` | `ClawKeyEvent` | key-event (cross-session memory / ticket) switch |
 | 1 | `handoff-1` | `Human` | human-handoff kill switch (real config is bot-level `humanConfig`) |
 | 2 | `knowledge-1` | `Dataset` | knowledge bases + recall tuning |
@@ -66,7 +74,12 @@ Only the center carries `nextComponents` — seven edges, `id = "center->{satell
 - **`clawRule.components` ≤ 64** — `ImportSecurityScanner` rejects larger files. The legal topology is 8. (`CLAW_TOO_MANY_COMPONENTS`)
 - **`center.content.llm.baseUrl` must be `null` or a public `http(s)` URL.** Internal / loopback / link-local / cloud-metadata addresses are rejected as SSRF, and a non-http scheme is rejected too. Normally leave it `null`. (`CLAW_BASEURL_SSRF`)
 - **`center.content.llm.model` is an AMH-gateway `model_version_id`** (24-hex opaque), *not* a readable model name — writing `"claude-sonnet-4-6"` produces a bot that cannot call the gateway, and LoopAgent does **not** support BYOK models. (`CLAW_MODEL_NAME_AS_ID`, warning)
-- **A blank model is not backfilled** — unlike every other id in this file. `fixLoopAgentCenterModel` returns *early* when the id is blank (it only re-checks and replaces a **stale** id against the gateway catalogue), so an empty `llm.model` survives the import intact: the agent then fails the first frame with `50101 No LLM credentials`, and when you import into an **existing** LoopAgent it silently **wipes the model that target already had**. Carry the id over from an export of the target, or tell the user to re-pick the model in the console and publish again. (`CLAW_MODEL_EMPTY`, warning)
+- **A blank model is not backfilled — it is the one value you can never ship.** `fixLoopAgentCenterModel` returns *early* when the id is blank (it only re-checks and replaces a **stale** id against the gateway catalogue), so an empty `llm.model` survives the import intact: the agent then fails the first frame with `50101 No LLM credentials`, and when you import into an **existing** LoopAgent it silently **wipes the model that target already had**. (`CLAW_MODEL_EMPTY`, error)
+- **Look the model id up with `agent_type=LOOP_AGENT` — and only that.** LoopAgent models are served by the **AMH LLM gateway**, and `GET /v1/model/list?org_id=…&agent_type=LOOP_AGENT` (account-level DevKey auth) is the one listing that returns gateway ids. An id taken from an unfiltered listing, or from another `agent_type`, is not reachable by the gateway and the agent answers `50101`. LoopAgent does not support BYOK models. In order of preference:
+  - **Updating an existing LoopAgent** → carry its own `clawRule` → `center.content.llm.model` across from its export (`model=` on the builder), so the import does not switch the agent's brain out from under the user.
+  - **New agent** → `python3 ../scripts/gptbots_org_api.py models --org <org_id> --agent-type LOOP_AGENT`, pick a `modelId`, pass it as `model=`. Confirm the choice with the user — it is the agent's brain and its per-message cost.
+  - **No credentials to query with** → fall back to the builder's pinned default `0ec52e3e7dfc000f9470eb15` (**GPT-5.6-Luna**) and say so at delivery. See `./org-devkey-api.md` §3.
+- **No plain-Agent top-level fields.** `chatModelVersionId`, `modelDynamicParams`, `creativityLevel`, `maxRespTokens`, `reasoningEffort`, `reasoningEnabled`, `showReasoning` and `databaseTableIds` belong to the QuestionAnswer schema; a backend LoopAgent export carries none of them. They are dead config that contradicts the `clawRule` the engine actually reads — and `chatModelVersionId` is worse than dead: the Agent detail API derived `supportImageRecognition` from it, so writing it (even as `""`) greys out attachment upload on share pages and the widget. **When optimizing a user-provided `.bot`, delete any of these you find** — older generators wrote them. (`CLAW_PLAIN_AGENT_FIELD` — error for `chatModelVersionId`, warning for the rest)
 - **Environment-bound ids are cleared or filtered on import.** `Dataset.docGroupIds` and `ClawDB.tableIds` are emptied when importing as a new Agent; `ToolApi.pluginIds` is filtered to plugins that exist and belong to the target org; `skillRefs` pointing at skills that cannot be resolved are dropped. Ship them **empty** and tell the user to bind resources after import. (`CLAW_ENV_REFS`, warning)
 - **`prompt` (top level) must be empty.** The identity that actually runs is `clawRule` → `center.content.prompts.persona`. A top-level prompt on a LoopAgent is dead text that misleads whoever reads the file next. (`CLAW_TOP_LEVEL_PROMPT`, warning)
 - **Empty prompt string means "use the engine default".** `null` / `""` / whitespace → the engine falls back to its built-in text. Never paste an engine default back into the field: it freezes today's wording into the bot and blocks future platform improvements.
@@ -132,6 +145,9 @@ P = load_prompt_store("prompts/")            # persona.md
 cfg = loopagent_config(
     "Support LoopAgent",
     persona=P.require("persona"),
+    # model=… omitted → DEFAULT_CLAW_MODEL (0ec52e3e7dfc000f9470eb15, GPT-5.6-Luna).
+    # Prefer a real id: gptbots_org_api.py models --org <org_id> --agent-type LOOP_AGENT
+    # Updating an existing LoopAgent? pass model="<id from that agent's export>".
     max_turns=25, max_errors=5, max_budget_input_tokens=0,
     knowledge=True,                # keep the Dataset satellite on (ids bound after import)
     database=False, tools=True, subagent=False,
@@ -140,6 +156,8 @@ cfg = loopagent_config(
 )
 save(cfg, "support-loopagent.bot")           # writes the file and runs the validator
 ```
+
+The builder refuses the plain-Agent fields listed in §3 (`PLAIN_AGENT_ONLY_FIELDS`) — passing `chatModelVersionId=` or `reasoningEffort=` through `**kwargs` raises instead of silently landing on the config — and never emits a blank `llm.model`. (Both guards live in `loopagent_config()` / `claw_center()`; a hand-built `rule=` bypasses them, so validate anything you assemble by hand.)
 
 Run the builder with no arguments to print full usage, or `--demo <dir>` for a validated working example.
 
@@ -154,13 +172,16 @@ Exit code must be 0 before delivery. Fix per the reported `path` / `fix` and rer
 
 Place the `.bot` (and its `prompts/` folder and generation script) in the working directory and return the paths. Then tell the user:
 - **Manual:** developer space → **Create Agent → Import** → select the file.
-- **API (test-mode target only):** `python3 ../scripts/publish_gptbots.py <file> --api-key <key>` (add `--release` only if they explicitly want to go live).
+- **API (existing target):** `python3 ../scripts/publish_gptbots.py <file> --api-key <key>` — the key must be an API Key with **version-management permission**, created manually in the console (add `--release` only if they explicitly want to go live). See `./version-manage-api.md`.
+- **API (brand-new Agent):** `python3 ../scripts/gptbots_org_api.py import-agent <file> --org <org_id>` with the account's DevKey/DevSecret — see `./org-devkey-api.md`.
 - **Always say this:** importing/saving only updates the **Debug** version. Until the user clicks **Publish / Release**, every production channel (Open API, share page, widget, LiveChat, Telegram, LiveDesk…) keeps running the previous snapshot — and a LoopAgent that has never been published fails on those channels with `AGENT_WORKFLOW_PUBLISHED_NOT_EXIST`.
 - Remind them to bind the environment-specific resources the import cleared: knowledge bases, data tables and plugins.
-- **If the file's `llm.model` is blank, say so explicitly**: the agent has no brain model until someone picks one (设置页 → 智能体大脑 → 模型) and publishes again. Until then every message returns `50101`. This is the single most common way a correctly-imported LoopAgent is dead on arrival.
+- **Name the brain model the file ships with**, and where the id came from (queried with `--agent-type LOOP_AGENT`, carried over from the target's export, or the pinned fallback `0ec52e3e7dfc000f9470eb15` / **GPT-5.6-Luna**) — so the user can switch it in the console (target Settings → Agent Brain → Model) if they want a different one. If you were updating an existing LoopAgent and carried its own id across, say so too. A blank `llm.model` must never reach the user: the agent would have no brain model at all and every message would return `50101` — the single most common way a correctly-imported LoopAgent is dead on arrival.
 
 ## References
 - Runtime semantics, gating checklists, error codes: `./loopagent-runtime.md`
 - Referenceable variables: `./variables-reference.md`
 - Material → mechanism mapping: `./materials-mapping.md`
 - Public API playbooks: `./call-gptbots-api.md`
+- Model version ids, org resources, creating an Agent from a file: `./org-devkey-api.md`
+- Updating / publishing / rolling back an existing Agent: `./version-manage-api.md`

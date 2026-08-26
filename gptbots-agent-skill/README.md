@@ -16,7 +16,9 @@ authoring-skills/
 │   ├── loopagent-runtime.md              # LoopAgent runtime gating / save-vs-publish / error codes
 │   ├── create-gptbots-audioagent.md      # Audio Agent (botType=Audio) → .bot (multiModal voice block)
 │   ├── create-gptbots-workflow.md        # Workflow → .flow
-│   ├── call-gptbots-api.md               # drive Agents via the public API (playbooks)
+│   ├── call-gptbots-api.md               # drive Agents via the public API (Bearer key playbooks)
+│   ├── org-devkey-api.md                 # account DevKey APIs: orgs, model version IDs, Tool/MCP/Skill, create Agent/Workflow
+│   ├── version-manage-api.md             # update / publish / roll back an existing target's version
 │   ├── organize-knowledge-base.md        # curate raw docs → import-ready Markdown / table / Q&A
 │   ├── flowagent-components.md           # FlowAgent component spec
 │   ├── workflow-nodes.md                 # Workflow 21-node spec
@@ -29,6 +31,10 @@ authoring-skills/
     ├── build_gptbots_loopagent.py        # builder: LoopAgent .bot (center + 7 satellites)
     ├── build_gptbots_audioagent.py       # builder: Audio Agent .bot (voice engine block)
     ├── build_gptbots_workflow.py         # builder: Workflow .flow
+    ├── gptbots_org_api.py                # account DevKey client (orgs, models, tools, MCPs, skills, create Agent/Workflow)
+    ├── publish_gptbots.py                # version import / release / list / rollback for an existing target
+    ├── create_knowledge_base.py          # create a knowledge base via API
+    ├── gptbots_prompts.py                # load node prompts from prompts/ | prompts.md | .json
     └── validate_knowledge_files.py       # knowledge-base file quality check (Document / Table / Q&A)
 ```
 
@@ -36,10 +42,11 @@ No per-agent files are bundled: users supply their own exported `.bot`/`.flow` f
 
 ## Constraints (consistent with the plan)
 
-- Use ONLY the public Open API (`https://api-${endpoint}.gptbots.ai` + `Authorization: Bearer <key>`); never use `/internal/*` or `/api/console/*`.
+- Use ONLY the public Open API on `https://api-${endpoint}.gptbots.ai`; never `/internal/*` or `/api/console/*`. Two credentials, never interchangeable: `Authorization: Bearer <Agent/Workflow API Key>` for one target (chat, runs, data, and its version endpoints when the key has **version-management permission**), and `Authorization: Basic base64(DevKey:DevSecret)` for the account/org APIs (orgs, model version IDs, Tool/MCP/Skill, creating Agents & Workflows) — the pair lives at https://www.gptbots.ai/developer/profile (Developer info).
 - Produce *plaintext* `.bot`/`.flow` (decryption-free, directly importable).
+- **Keep the package English-only / ASCII source.** No CJK prose in `SKILL.md`, `README.md`, `CHANGELOG.md` or `references/` — name console paths in English. Where a CJK string is *data* (the Audio Agent TTS symbol filter; the image-placeholder labels in `validate_knowledge_files.py`), write it as `\uXXXX` escapes and comment what it is, so the source stays ASCII and the runtime value is unchanged. Check with: `grep -rn -P "[\x{2e80}-\x{9fff}\x{ff00}-\x{ffef}\x{3000}-\x{303f}]" --include="*.md" --include="*.py" .`
 - After generation you *must* run `scripts/validate_gptbots_config.py` to self-check; do not deliver if it fails.
-- Leave model id / cross-organization references / authentication blank (backfilled or cleared on import); when real ids are needed, query them via this organization's public API.
+- Leave model id / cross-organization references / authentication blank (backfilled or cleared on import); when real ids are needed, query them with `GET /v1/model/list` (`scripts/gptbots_org_api.py models`, account DevKey auth) — `modelId` is the stable model **version** id configs bind to. **LoopAgent is the exception:** its `clawRule` model is never backfilled (blank = a dead agent, and it wipes the target's model on update), and its models come from the AMH gateway, so the lookup must pass `--agent-type LOOP_AGENT`; with no credentials to query, `build_gptbots_loopagent.py` pins `DEFAULT_CLAW_MODEL` (`0ec52e3e7dfc000f9470eb15`, GPT-5.6-Luna). Re-pin that constant (and `CLAW_DEFAULT_MODEL` in the validator) when the platform default moves.
 
 ## Maintainability (sync when the schema drifts)
 
@@ -48,7 +55,7 @@ The rules in `validate_gptbots_config.py` are ported from the real backend/front
 - Frontend `ailab-d-developer-frontend/src/features/workflow/canvas/data/handle-node-error.ts`, `handle-connection-point.ts` (Workflow canvas); `src/features/flow-bot/canvas/data/handle-connection-point.ts` + `convert.ts` (FlowAgent canvas edge handles)
 - LoopAgent: backend `oversea-ailab-bot/.../bean/entity/ClawFlow*.java`, `consts/ClawComponentTypes.java`, `helper/ClawDefaultsHelper.java` (default topology), `helper/ClawLoopControlValidator.java` (loop ranges, enforced on the import path too), `service/exportimport/ClawRuleTransferHelper.java` + `ImportSecurityScanner.java`; engine `ailab-claw-engine/packages/claw-engine/src/csagent/botFlowAdapter.ts` + `types/botFlow.ts`; frontend `src/features/claw-bot/data/claw-rule-codec.ts`
 - Audio Agent: backend `oversea-ailab-bot/.../helper/audio/AudioConfigValidator.java`, `bean/entity/BotMultiModal.java` + `bean/entity/audio/*.java`, `oversea-ailab-common/.../enums/AudioEngineMode.java`; frontend `src/types/audio-agent.ts`
-- API docs (authoritative source for call-gptbots-api): https://www.gptbots.ai/docs/api-reference/overview
+- API docs (authoritative source for call-gptbots-api / org-devkey-api / version-manage-api): https://www.gptbots.ai/docs/api-reference/overview — in the doc repo, `src/zh_CN/API Reference/` (Account / Agent / Workflow / Model API sections)
 
 The rules in `validate_knowledge_files.py` and `organize-knowledge-base.md` mirror the knowledge-base storage formats. When they drift, re-sync against:
 - Backend `oversea-ailab-common/.../enums/BotDataSegmentType.java`, `BotDataPurposeType.java`; `oversea-ailab-bot/.../bean/entity/BotDataSplitRule.java` (headerType R1/R2/R3 | C1/C2/C3), `QuestionAnswer.java` (question/answer fields)

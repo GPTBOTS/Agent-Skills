@@ -18,6 +18,14 @@ ported from the real backend and frontend validation:
   - Frontend .../features/flow-bot/canvas/data/handle-connection-point.ts + convert.ts
     (FlowAgent edge handle ids: {side}{id}-{key}[_suffix]; a handle that doesn't resolve to a
     rendered port makes the canvas draw a distorted/misrouted edge)
+  - Backend .../bean/entity/ClawFlow*.java, .../consts/ClawComponentTypes.java,
+    .../helper/ClawDefaultsHelper.java, .../helper/ClawLoopControlValidator.java,
+    .../service/exportimport/ClawRuleTransferHelper.java + ImportSecurityScanner.java
+    (LoopAgent clawRule topology, loop-control ranges, import stripping, SSRF/DoS limits)
+  - Engine ailab-claw-engine/.../csagent/botFlowAdapter.ts + types/botFlow.ts and frontend
+    .../features/claw-bot/data/claw-rule-codec.ts (LoopAgent wire shape & defaults)
+  - Backend .../helper/audio/AudioConfigValidator.java, .../bean/entity/BotMultiModal.java
+    (+ entity/audio/*.java), .../common/enums/AudioEngineMode.java (Audio Agent voice config)
 When the schema changes, re-sync against these and bump the skill version.
 
 Usage:
@@ -29,9 +37,10 @@ import json
 import re
 import sys
 
-# Bot types this skill authors. The backend BotType enum also has MultiAgent / Claw, but this
-# skill only generates QuestionAnswer / Flow / Workflow, so the validator scopes to those.
-BOT_TYPES = {"QuestionAnswer", "Flow", "Workflow"}
+# Bot types this skill authors. Mirrors ai.altatech.oversea.common.enums.BotType, minus the
+# types this skill does not generate (MultiAgent, Clawsearch). "Claw" is the historical alias
+# of LoopAgent - the backend still accepts it on read, but always emit "LoopAgent".
+BOT_TYPES = {"QuestionAnswer", "Flow", "Workflow", "LoopAgent", "Audio"}
 EXPORT_TYPES = {"BOT", "WORKFLOW"}
 
 # Valid HumanManufacturerEnum values (.bot top-level `humanConfig.manufacturer`).
@@ -103,8 +112,11 @@ GATHER_VALUE_TYPES = {"string", "bool", "integer", "number", "datetime", "list"}
 OPTION_FIELD_TYPES = {"string", "multiString", "bool", "integer", "number",
                       "datetime", "phoneNumber", "email", "radio", "checkbox"}  # OptionFieldTypeEnum
 FORM_GATHER_TYPES = {"single", "all"}                                         # FormGatherType
-VARIABLE_TYPES = {"USER_PROPERTY", "CUSTOM_VARIABLE"}                         # VariableType
-VARIABLE_OPERATE_TYPES = {"CLEAR", "COVER", "APPEND"}                         # VariableOperateType
+VARIABLE_TYPES = {"USER_PROPERTY", "CUSTOM_VARIABLE"}                         # VariableType (legacy field, optional)
+VARIABLE_OPERATE_TYPES = {"CLEAR", "COVER", "APPEND"}                         # VariableOperateType (legacy field)
+# Real export shape of variableSetValueConfigs[] is {variableName, operation, value};
+# `operation` is capitalized (Cover/Clear/Append), NOT the legacy COVER/CLEAR/APPEND.
+VARIABLE_OPERATIONS = {"Cover", "Clear", "Append"}                            # operation (real export)
 COMBINE_TYPES = {"and", "or"}                                                 # CombineEnum
 REGULAR_CATEGORIES = {"GlobalVariable", "UserProperty", "BrowserProperty", "Upstream",
                       "WhatsApp", "Telegram", "LiveChat", "LiveDesk", "Line", "Start",
@@ -213,16 +225,74 @@ def check_top_level(cfg, rep):
         rep.err("L0_EXPORT_TYPE", "$.exportType", f"Invalid exportType: {export_type}",
                 "Set it to BOT or WORKFLOW")
     bot_type = cfg.get("botType")
-    if bot_type not in BOT_TYPES:
+    if bot_type == "Claw":
+        # Historical alias, still accepted by the backend on read. Report it, but keep
+        # validating the file AS a LoopAgent — dropping every LoopAgent check would blind
+        # us on exactly the population most likely to carry plain-Agent residue and a
+        # blank brain model: old files nobody has re-exported since the rename.
+        rep.err("L0_BOT_TYPE", "$.botType",
+                "botType=Claw is the historical alias of LoopAgent",
+                "Rename it to LoopAgent — the backend still reads Claw, but always emit "
+                "LoopAgent. The file is validated as a LoopAgent below")
+        bot_type = "LoopAgent"
+    elif bot_type not in BOT_TYPES:
         rep.err("L0_BOT_TYPE", "$.botType", f"Invalid botType: {bot_type}",
-                "Set it to QuestionAnswer / Flow / Workflow")
+                "Set it to QuestionAnswer / Flow / LoopAgent / Audio / Workflow")
     # exportType / botType consistency
     if bot_type == "Workflow" and export_type != "WORKFLOW":
         rep.err("L0_TYPE_MISMATCH", "$.exportType", "Workflow requires exportType=WORKFLOW")
-    if bot_type in {"QuestionAnswer", "Flow"} and export_type == "WORKFLOW":
+    if bot_type in {"QuestionAnswer", "Flow", "LoopAgent", "Audio"} and export_type == "WORKFLOW":
         rep.err("L0_TYPE_MISMATCH", "$.exportType", f"{bot_type} requires exportType=BOT")
     if _is_blank(cfg.get("formatVersion")):
         rep.warn("L0_FORMAT_VERSION", "$.formatVersion", "It is recommended to set formatVersion (e.g. \"1.0\")")
+    export_time = cfg.get("exportTime")
+    if export_time is not None and (isinstance(export_time, bool) or not isinstance(export_time, int)):
+        rep.err("L0_EXPORT_TIME", "$.exportTime",
+                f"exportTime must be an epoch-milliseconds integer (Long), got {type(export_time).__name__}: {export_time!r}",
+                "Use int(datetime.now(timezone.utc).timestamp() * 1000); ISO strings fail import")
+    # Auto-save NPE guard (backend regression 2025-12-02): the import copies `multiModal`
+    # verbatim with no default backfill, while the console auto-save dereferences
+    # multiModalForm.multiModalInput.chatMode WITHOUT a null check — so a BOT imported
+    # without a non-null multiModal.multiModalInput 500s on EVERY auto-save (the import
+    # itself succeeds, the bot is then uneditable). Normally-created bots get defaults at
+    # creation and never hit this; only imported bots do.
+    if export_type == "BOT":
+        mm = cfg.get("multiModal")
+        mmi = mm.get("multiModalInput") if isinstance(mm, dict) else None
+        if not isinstance(mmi, dict):
+            rep.err("L0_MULTIMODAL_AUTOSAVE_NPE", "$.multiModal",
+                    "multiModal.multiModalInput is missing/null — the imported bot will hit a "
+                    "backend NPE (HTTP 500) on every console auto-save",
+                    'Emit the full known-good block (builder DEFAULT_MULTIMODAL()); a bare '
+                    '{"multiModalInput": {}} survives auto-save but still dies on the chat API '
+                    "(see L0_MULTIMODAL_FILE_LIMIT). Do NOT guess audioMode/chatMode/imageMode "
+                    "enum values — copy them from a real export")
+        else:
+            # BotChatOpenAPIVersion2DataPrePreparationService unboxes
+            #   int inputFileLimit = ...getMultiModalInput().getFileLimit();
+            # with no null check, so a .bot whose multiModalInput omits fileLimit imports
+            # cleanly, saves cleanly, and then answers EVERY POST /v2/conversation/message
+            # with 50000 "NullPointerException - Cannot invoke java.lang.Integer.intValue()".
+            # Console-created bots are seeded with fileLimit; only imported ones hit this.
+            limit = mmi.get("fileLimit")
+            if limit is None or isinstance(limit, bool) or not isinstance(limit, int):
+                rep.err("L0_MULTIMODAL_FILE_LIMIT", "$.multiModal.multiModalInput.fileLimit",
+                        "multiModalInput.fileLimit is missing/not an integer — the Open API v2 "
+                        "chat endpoint unboxes it, so every message returns "
+                        "50000 NullPointerException (import and console auto-save still succeed, "
+                        "which is why this passes unnoticed)",
+                        "Set an integer (1 is the platform default for a new bot), or emit the "
+                        "whole known-good multiModal block from the builder")
+    # QuestionAnswer field-name gotchas (confirmed against a real export): the opening
+    # line is `firstMessage` and the suggested questions are `presetQuestions`. The
+    # plausible-looking `welcomeMessage` / `guidingQuestions` are dropped on import.
+    if bot_type in ("QuestionAnswer", "Audio", "LoopAgent"):
+        if "welcomeMessage" in cfg and "firstMessage" not in cfg:
+            rep.warn("AGENT_WELCOME_FIELD", "$.welcomeMessage",
+                     "use `firstMessage` for the opening line; `welcomeMessage` is dropped on import")
+        if "guidingQuestions" in cfg and "presetQuestions" not in cfg:
+            rep.warn("AGENT_PRESET_FIELD", "$.guidingQuestions",
+                     "use `presetQuestions` for the suggested questions; `guidingQuestions` is dropped on import")
     return bot_type
 
 
@@ -287,6 +357,7 @@ def check_workflow_graph(workflow, rep, base_path, inner=False):
     out_deg, in_deg = {}, {}
     edge_ids = set()
     adj = {}
+    out_handles = {}   # nodeId -> set of sourceHandle values on its outgoing edges
     for j, edge in enumerate(edges):
         ep = f"{base_path}.workflowEdges[{j}]"
         if not isinstance(edge, dict):
@@ -314,6 +385,8 @@ def check_workflow_graph(workflow, rep, base_path, inner=False):
             out_deg[src] = out_deg.get(src, 0) + 1
             in_deg[tgt] = in_deg.get(tgt, 0) + 1
             adj.setdefault(src, []).append(tgt)
+            if not _is_blank(edge.get("sourceHandle")):
+                out_handles.setdefault(src, set()).add(edge.get("sourceHandle"))
 
     # connectivity / terminal rules
     for n in nodes:
@@ -341,6 +414,27 @@ def check_workflow_graph(workflow, rep, base_path, inner=False):
                 rep.err("WF_NODE_NO_IN", base_path, f"Node is missing an inbound edge: {name}")
             if out_deg.get(nid, 0) == 0 and ntype not in {"BREAK", "CONTINUE", "NEXT_LOOP"}:
                 rep.err("WF_NODE_NO_OUT", base_path, f"Node is missing an outbound edge: {name}")
+        # CONDITION/INTENT: EVERY branch/intent sourceHandle must have a connected edge
+        # (backend WorkflowRuntimeChecker: "must have all branches/intents connected").
+        if ntype == "CONDITION":
+            handles = {b.get("sourceHandle") for b in
+                       ((n.get("conditionParam") or {}).get("conditionBranches") or [])
+                       if isinstance(b, dict) and b.get("sourceHandle")}
+            missing = handles - out_handles.get(nid, set())
+            if missing:
+                rep.err("WF_COND_NOT_CONNECTED", base_path,
+                        f"CONDITION '{name}' has branch(es) with no outgoing edge: {sorted(missing)} "
+                        "— every conditionBranches[].sourceHandle needs a matching edge "
+                        "(edge sourceHandle == branch sourceHandle)")
+        elif ntype == "INTENT":
+            handles = {it.get("sourceHandle") for it in
+                       ((n.get("intentParam") or {}).get("intents") or [])
+                       if isinstance(it, dict) and it.get("sourceHandle")}
+            missing = handles - out_handles.get(nid, set())
+            if missing:
+                rep.err("WF_INTENT_NOT_CONNECTED", base_path,
+                        f"INTENT '{name}' has intent(s) with no outgoing edge: {sorted(missing)} "
+                        "— every intents[].sourceHandle needs a matching edge")
 
     # DAG detection
     if _has_cycle(id_set, adj):
@@ -357,17 +451,36 @@ def check_workflow_graph(workflow, rep, base_path, inner=False):
                 check_workflow_graph(sub, rep, f"{base_path}.workflowNodes[{i}].subWorkflow", inner=True)
 
 
+_VAR_NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+_INTERNAL_HOST_RE = re.compile(
+    r"^(localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|"
+    r"172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|169\.254\.\d+\.\d+|\[?::1\]?)$", re.IGNORECASE)
+
+
+def _url_host(url):
+    m = re.match(r"^[a-zA-Z][a-zA-Z0-9+.\-]*://([^/:?#]+)", str(url or ""))
+    return m.group(1) if m else ""
+
+
 def _check_node_param(node, np, rep):
+    """Per-node parameter checks, mirroring backend WorkflowNodeChecker."""
     ntype = node.get("type")
     required = NODE_REQUIRED_PARAM.get(ntype)
-    if required and node.get(required) is None and ntype not in {"END"}:
+    # END is exempt: inner LOOP/BATCH sub-workflow END nodes legitimately carry a null
+    # endParam in real exports (only the top-level END needs an output config).
+    if required and node.get(required) is None and ntype != "END":
         rep.err("WF_PARAM_MISSING", f"{np}.{required}", f"{ntype} node is missing {required}")
         return
     if ntype == "HTTP":
         http = node.get("httpParam") or {}
         req = http.get("request") or {}
-        if _is_blank(req.get("url")):
+        url = req.get("url")
+        if _is_blank(url):
             rep.err("WF_HTTP_URL", f"{np}.httpParam.request.url", "HTTP node is missing url")
+        elif _INTERNAL_HOST_RE.match(_url_host(url)):
+            rep.err("WF_HTTP_INTERNAL_IP", f"{np}.httpParam.request.url",
+                    f"HTTP node URL cannot use an internal/loopback host: {url}",
+                    "Use a public URL; intranet/loopback addresses are rejected on non-OP deployments")
     elif ntype == "CODE":
         code = node.get("codeParam") or {}
         if _is_blank(code.get("code")):
@@ -390,6 +503,63 @@ def _check_node_param(node, np, rep):
         db = node.get("databaseParam") or {}
         if _is_blank(db.get("sqlQuery")):
             rep.err("WF_DB_SQL", f"{np}.databaseParam.sqlQuery", "DATABASE node is missing sqlQuery")
+    elif ntype == "VARIABLE_AGGREGATE":
+        agg = node.get("variableAggregateParam") or {}
+        if agg.get("strategy") != "FIRST_NON_NULL":
+            rep.err("WF_AGG_STRATEGY", f"{np}.variableAggregateParam.strategy",
+                    f"VARIABLE_AGGREGATE only supports FIRST_NON_NULL (got {agg.get('strategy')!r})")
+        groups = agg.get("groups") or []
+        if not groups:
+            rep.err("WF_AGG_NO_GROUP", f"{np}.variableAggregateParam.groups",
+                    "VARIABLE_AGGREGATE must have at least 1 group")
+        elif len(groups) > 20:
+            rep.err("WF_AGG_GROUPS", f"{np}.variableAggregateParam.groups",
+                    f"too many groups ({len(groups)}; max 20)")
+        for gi, g in enumerate(groups):
+            if not isinstance(g, dict):
+                continue
+            gp = f"{np}.variableAggregateParam.groups[{gi}]"
+            gname, gtype = g.get("groupName"), g.get("groupType")
+            if not (gname and _VAR_NAME_RE.match(str(gname))):
+                rep.err("WF_AGG_GROUP_NAME", gp + ".groupName",
+                        f"group name {gname!r} must match ^[a-zA-Z_][a-zA-Z0-9_]*$")
+            if gtype is None:
+                rep.err("WF_AGG_GROUP_TYPE", gp + ".groupType", "group type is required")
+            gvars = g.get("variables") or []
+            if not gvars:
+                rep.err("WF_AGG_GROUP_VARS", gp + ".variables", "each group needs at least 1 variable")
+            elif len(gvars) > 10:
+                rep.err("WF_AGG_GROUP_VARS", gp + ".variables", f"too many variables ({len(gvars)}; max 10)")
+            for v in gvars:
+                if isinstance(v, dict) and gtype is not None and v.get("type") != gtype:
+                    rep.err("WF_AGG_VAR_TYPE", gp + ".variables",
+                            f"variable {v.get('name')!r} type {v.get('type')!r} must equal group type {gtype!r}")
+    elif ntype in {"LOOP", "BATCH"}:
+        param = node.get("loopParam" if ntype == "LOOP" else "batchParam") or {}
+        seen = set()
+        srcs = (param.get("intermediateVariables") or []) if ntype == "LOOP" else []
+        for v in list(srcs) + list(param.get("inputArrays") or []):
+            if isinstance(v, dict):
+                nm = v.get("name")
+                if nm == "index":
+                    rep.err("WF_LOOP_INDEX_NAME", f"{np}.{ntype.lower()}Param",
+                            f"{ntype} variable name cannot be 'index' (reserved)")
+                elif nm in seen:
+                    rep.err("WF_LOOP_DUP_NAME", f"{np}.{ntype.lower()}Param",
+                            f"duplicate {ntype} variable name {nm!r}")
+                else:
+                    seen.add(nm)
+        # (subWorkflow presence + recursion handled at graph level in check_workflow_graph)
+    elif ntype == "SET_INTERMEDIATE_VARIABLE":
+        sp = node.get("setIntermediateVariableParam") or {}
+        assigns = sp.get("assignments") or []
+        if not assigns:
+            rep.err("WF_SIV_NO_ASSIGN", f"{np}.setIntermediateVariableParam.assignments",
+                    "SET_INTERMEDIATE_VARIABLE must have at least one assignment")
+        for ai, a in enumerate(assigns):
+            if isinstance(a, dict) and a.get("leftValue") is None:
+                rep.err("WF_SIV_LEFT", f"{np}.setIntermediateVariableParam.assignments[{ai}].leftValue",
+                        "assignment leftValue cannot be null")
 
 
 def _has_cycle(id_set, adj):
@@ -414,6 +584,26 @@ def _has_cycle(id_set, adj):
 
 # --------------------------- L4 FlowAgent ---------------------------
 
+# A platform variable reference is `{{name}}` (double braces). A single-braced
+# `{name}` is almost always the result of running str.format()/f-string over a prompt
+# that contained `{{...}}` — .format() COLLAPSES `{{x}}` to `{x}`, after which GPTBots
+# no longer recognizes the variable. The lookbehind/lookahead skip correctly-doubled
+# braces and match only the broken single-brace form.
+_SINGLE_BRACE_VAR = re.compile(r'(?<!\{)\{([A-Za-z_]\w*)\}(?!\})')
+
+
+def _check_single_brace_vars(text, path, rep):
+    if not isinstance(text, str):
+        return
+    hits = _SINGLE_BRACE_VAR.findall(text)
+    if hits:
+        uniq = sorted(set(hits))
+        rep.warn("MSG_SINGLE_BRACE_VAR", path,
+                 f"single-brace variable(s) {', '.join('{'+h+'}' for h in uniq)} — platform "
+                 f"variables need DOUBLE braces ({{{{{uniq[0]}}}}}); a single brace usually means "
+                 f"str.format()/f-string collapsed the {{{{...}}}} (use .replace() for substitution)")
+
+
 def _check_component_enums(c, cp, rep):
     """Validate enum-valued fields inside one flow component (mirrors backend strict parse)."""
     _check_enum(c.get("reasoningEffort"), REASONING_EFFORTS, "COMP_ENUM_REASONING_EFFORT", cp + ".reasoningEffort", rep, "reasoningEffort")
@@ -423,19 +613,63 @@ def _check_component_enums(c, cp, rep):
     _check_enum(c.get("responseFormat"), RESPONSE_FORMATS, "COMP_ENUM_RESPONSE_FORMAT", cp + ".responseFormat", rep, "responseFormat")
     _check_enum(c.get("contentType"), FLOW_CONTENT_TYPES, "COMP_ENUM_CONTENT_TYPE", cp + ".contentType", rep, "contentType")
     _check_list_enum(c.get("multiResponseTypes"), MULTI_MODAL_DATA_TYPES, "COMP_ENUM_MULTI_RESPONSE", cp + ".multiResponseTypes", rep, "multiResponseTypes")
+    # Message/Predefine reply text (their content field) — also variable-scanned.
+    _check_single_brace_vars(c.get("content"), cp + ".content", rep)
     # prompt message lists (LLM / Branch / Condition / ChatGather / FormGather)
     for fld in ("messages", "datasetMessages"):
         msgs = c.get(fld)
         if isinstance(msgs, list):
             for i, m in enumerate(msgs):
                 if isinstance(m, dict):
-                    _check_enum(m.get("type"), PROMPT_MESSAGE_TYPES, "COMP_ENUM_MESSAGE_TYPE", f"{cp}.{fld}[{i}].type", rep, "message type")
+                    mpath = f"{cp}.{fld}[{i}]"
+                    _check_enum(m.get("type"), PROMPT_MESSAGE_TYPES, "COMP_ENUM_MESSAGE_TYPE", mpath + ".type", rep, "message type")
+                    _check_single_brace_vars(m.get("text"), mpath + ".text", rep)
+                    # The importer rebuilds the prompt editor ONLY from the canonical
+                    # PromptMessage object {lineId,type,text,ids,upstream,children,datasetType}
+                    # with the body in `text`. A message that carries the body in stray keys
+                    # (content/value/prompt) — what a hand-rolled generator often emits — is
+                    # NOT read, so the node imports with a BLANK Identity/System prompt even
+                    # though those keys look populated. Flag any stray body key.
+                    stray = [k for k in ("content", "value", "prompt") if k in m]
+                    if stray:
+                        body_in_stray = any(m.get(k) and str(m[k]).strip() for k in stray)
+                        if body_in_stray and not (m.get("text") and str(m["text"]).strip()):
+                            rep.err("MSG_NONCANONICAL", mpath,
+                                    f"prompt message body is in {stray} but not in `text` — the importer "
+                                    "reads only `text`, so this imports as a BLANK prompt",
+                                    "Put the body in `text` and use the canonical PromptMessage "
+                                    "shape {lineId,type,text,ids,upstream,children,datasetType} (builder _msg)")
+                        else:
+                            rep.warn("MSG_NONCANONICAL", mpath,
+                                     f"prompt message has non-schema key(s) {stray}; real exports use only "
+                                     "`text`. Stray keys signal a non-canonical message that may import blank",
+                                     "Emit the canonical PromptMessage object (builder _msg/role)")
+                    if m.get("type") == "Role" and not (m.get("text") and str(m["text"]).strip()):
+                        rep.err("MSG_ROLE_EMPTY", mpath,
+                                f"the Role (identity prompt) of {c.get('type')} #{c.get('id')} has no `text` "
+                                "— the node imports with no instructions (the prompt body must be in `text`)",
+                                "Provide a non-empty identity prompt in the Role message's `text`")
     # gather fields (ChatGather / FormGather)
     gfs = c.get("gatherFields")
     if isinstance(gfs, list):
         for i, g in enumerate(gfs):
             if isinstance(g, dict):
                 gp = f"{cp}.gatherFields[{i}]"
+                # The backend reads the field name from `fieldName` (label from `showName`).
+                # name/variableName/key are silently dropped on import → the platform then
+                # assigns random default names (age/user_birthday/…). Catch that here.
+                fname = g.get("fieldName")
+                if _is_blank(fname):
+                    hint = next((k for k in ("name", "variableName", "key") if g.get(k)), None)
+                    rep.err("GATHER_FIELD_NAME", gp + ".fieldName",
+                            "gather field is missing `fieldName`" +
+                            (f" (found '{hint}', which the import drops → random default name)" if hint else ""),
+                            "Set fieldName (+ showName for the label); use gather_fields() in the builder")
+                elif not re.match(r"^[a-z0-9_]+$", str(fname)):
+                    rep.err("GATHER_FIELD_NAME_FORMAT", gp + ".fieldName",
+                            f"fieldName {fname!r} must contain only lowercase letters, digits, "
+                            "and underscores ([a-z0-9_]) — it becomes a variable key",
+                            "Rename it to e.g. user_name")
                 _check_enum(g.get("gatherType"), GATHER_FIELD_TYPES, "COMP_ENUM_GATHER_TYPE", gp + ".gatherType", rep, "gatherType")
                 _check_enum(g.get("valueType"), GATHER_VALUE_TYPES, "COMP_ENUM_GATHER_VALUE_TYPE", gp + ".valueType", rep, "valueType")
                 _check_enum(g.get("optionFieldType"), OPTION_FIELD_TYPES, "COMP_ENUM_OPTION_FIELD_TYPE", gp + ".optionFieldType", rep, "optionFieldType")
@@ -448,6 +682,14 @@ def _check_component_enums(c, cp, rep):
         for i, v in enumerate(vscs):
             if isinstance(v, dict):
                 vp = f"{cp}.variableSetValueConfigs[{i}]"
+                # Real export shape: {variableName, operation, value}. `operation` is
+                # capitalized (Cover/Clear/Append). Validate it when present.
+                _check_enum(v.get("operation"), VARIABLE_OPERATIONS, "COMP_ENUM_VARIABLE_OPERATION", vp + ".operation", rep, "operation")
+                if _is_blank(v.get("variableName")):
+                    rep.err("COMP_VARIABLE_NAME", vp + ".variableName",
+                            "variableSetValueConfigs entry is missing variableName",
+                            "Each assignment needs {variableName, operation, value}")
+                # legacy fields, still validated if a caller emits them
                 _check_enum(v.get("variableType"), VARIABLE_TYPES, "COMP_ENUM_VARIABLE_TYPE", vp + ".variableType", rep, "variableType")
                 _check_enum(v.get("variableOperateType"), VARIABLE_OPERATE_TYPES, "COMP_ENUM_VARIABLE_OPERATE_TYPE", vp + ".variableOperateType", rep, "variableOperateType")
     # rule groups (Regular / Bool)
@@ -481,11 +723,89 @@ def _check_component_edges(c, cp, comp_type_by_id, rep):
     owner_id = c.get("id")
     owner_type = c.get("type")
     src_key = HANDLE_SOURCE_KEY.get(owner_type)
+    # A classifier must wire its built-in Other fallback (branch_other), or unmatched
+    # messages dead-end. Detect it across this component's edges.
+    if owner_type == "Branch":
+        has_other = any(isinstance(nx, dict) and str(nx.get("sourceHandle", "")).endswith("-branch_other")
+                        for nx in (c.get("nextComponents") or []))
+        if not has_other:
+            rep.err("BRANCH_NO_OTHER", cp + ".nextComponents",
+                    f"Classifier #{owner_id} has no branch_other (built-in Other) edge — "
+                    "unmatched messages would dead-end",
+                    'Add the Other fallback edge with name="_other", condition="" '
+                    "(use branch_other() in the builder)")
+    # A Condition node carries its IF text on the conditions_true edge's `condition`
+    # (name="_true"); the conditions_false edge is name="_false", condition="". An
+    # empty true-edge condition = an empty IF box on the canvas.
+    if owner_type == "Condition":
+        edges = [nx for nx in (c.get("nextComponents") or []) if isinstance(nx, dict)]
+        true_e = next((e for e in edges if str(e.get("sourceHandle", "")).endswith("-conditions_true")), None)
+        false_e = next((e for e in edges if str(e.get("sourceHandle", "")).endswith("-conditions_false")), None)
+        if true_e is None:
+            rep.err("CONDITION_NO_TRUE", cp + ".nextComponents",
+                    f"Condition #{owner_id} has no conditions_true edge",
+                    "Wire both outlets with condition_edges() in the builder")
+        else:
+            if not str(true_e.get("condition") or "").strip():
+                rep.err("CONDITION_IF_EMPTY", cp + ".nextComponents",
+                        f"Condition #{owner_id} conditions_true edge has an empty `condition` — "
+                        "the IF condition text must live here (the canvas IF box reads it)",
+                        'Put the IF text on the conditions_true edge (condition_edges(if_text=...))')
+            if true_e.get("name") != "_true":
+                rep.err("CONDITION_EDGE_NAME", cp + ".nextComponents",
+                        f"Condition #{owner_id} conditions_true edge name must be \"_true\" "
+                        f"(got {true_e.get('name')!r})", 'Set name="_true"')
+        if false_e is not None and false_e.get("name") != "_false":
+            rep.err("CONDITION_EDGE_NAME", cp + ".nextComponents",
+                    f"Condition #{owner_id} conditions_false edge name must be \"_false\" "
+                    f"(got {false_e.get('name')!r})", 'Set name="_false"')
+    # A Variable (assignment) node's success outlet is `variable_true` (edge
+    # name="_true") — NOT the bare `variable` handle. The platform's "assignment
+    # successful" port is keyed `variable_true`, so a plain `right{id}-variable`
+    # edge does not anchor to that port: the canvas draws a detached/floating line
+    # and the port greys out (identical failure to a Condition true-edge missing
+    # its `_true`). The `_parse_handle` key drops the `_true`/`_exception` suffix,
+    # so EDGE_SOURCE_KEY cannot catch this — check the raw suffix here.
+    if owner_type == "Variable":
+        edges = [nx for nx in (c.get("nextComponents") or []) if isinstance(nx, dict)]
+        for nx in edges:
+            sh = str(nx.get("sourceHandle") or "")
+            # the bare success handle: ends with "-variable" and carries no suffix
+            if sh == f"right{owner_id}-variable" or (sh.endswith("-variable") and "_" not in sh.rsplit("-", 1)[-1]):
+                rep.err("VAR_SUCCESS_HANDLE", cp + ".nextComponents",
+                        f"Variable #{owner_id} success edge uses the bare handle "
+                        f"'{sh}' — the 'assignment successful' port is keyed "
+                        "'variable_true', so this edge does not anchor to it and the "
+                        "canvas draws a floating/greyed line",
+                        f"Use sourceHandle 'right{owner_id}-variable_true' with name "
+                        '"_true" (connect(var, dst) / connect(var, dst, suffix="true") '
+                        "in the builder now emits this automatically)")
+            elif sh.endswith("-variable_true") and nx.get("name") != "_true":
+                rep.err("VAR_SUCCESS_HANDLE", cp + ".nextComponents",
+                        f"Variable #{owner_id} variable_true edge name must be "
+                        f"\"_true\" (got {nx.get('name')!r})", 'Set name="_true"')
     for k, nx in enumerate(c.get("nextComponents") or []):
         if not isinstance(nx, dict):
             continue
         ep = f"{cp}.nextComponents[{k}]"
         sh, th, nid = nx.get("sourceHandle"), nx.get("targetHandle"), nx.get("nextComponentId")
+        # Backend BotFlowNext parses `id`, `nextComponentId`, `sort` as Integer with strict
+        # Jackson typing (same as `exportTime`): ANY string — "e1", "vueflow__edge-...", even a
+        # quoted number "1" — fails import with 'value X is not allowed for field id'.
+        # (FAIL_ON_UNKNOWN_PROPERTIES=false: extra fields are tolerated; only wrong TYPES kill
+        # the import.) Use unique integers for edge ids; 100000+seq avoids colliding with
+        # component ids; `sort` may equal `id`.
+        eid = nx.get("id")
+        if eid is not None and (isinstance(eid, bool) or not isinstance(eid, int)):
+            rep.err("EDGE_ID_NOT_LONG", ep + ".id",
+                    f"Edge id must be a bare integer (backend Integer), got {type(eid).__name__}: {eid!r}",
+                    "Use a unique integer, e.g. 100000+seq (won't collide with component ids)")
+        for fld in ("nextComponentId", "sort"):
+            v = nx.get(fld)
+            if v is not None and (isinstance(v, bool) or not isinstance(v, int)):
+                rep.err("EDGE_INT_FIELD", f"{ep}.{fld}",
+                        f"{fld} must be a bare integer (backend Integer), got {type(v).__name__}: {v!r}",
+                        f'Write "{fld}": 2, not "{fld}": "2"')
         if sh:
             ps = _parse_handle(sh)
             if ps is None or ps[0] != "right":
@@ -501,6 +821,49 @@ def _check_component_edges(c, cp, comp_type_by_id, rep):
                     rep.err("EDGE_SOURCE_KEY", ep + ".sourceHandle",
                             f"sourceHandle key '{skey}' does not match a {owner_type} component (expected '{src_key}')",
                             f"Use right{owner_id}-{src_key}...")
+                # Classifier (Branch) rule branches: the handle suffix is a sequential
+                # number (branch_1, branch_2, …) and the RULE lives in the edge's
+                # `condition` as natural-language text. A numeric/empty condition means the
+                # rule was wrongly stored as an id (the UI then shows the id, not the rule).
+                if owner_type == "Branch":
+                    suffix = sh.split("-", 1)[1] if "-" in sh else ""
+                    suffix = suffix[len(skey) + 1:] if suffix.startswith(skey + "_") else ""
+                    if suffix == "exception":
+                        # A wired classifier exception branch IS supported: real
+                        # platform exports contain right{id}-branch_exception (name
+                        # "_exception") routing to a fallback node, structurally
+                        # identical to the LLM/Condition wired exception, with the
+                        # classifier's exceptionSwitch=True. It is only inconsistent
+                        # when the edge exists but the exception mechanism is off.
+                        if not c.get("exceptionSwitch"):
+                            rep.warn("BRANCH_EXCEPTION_EDGE", ep + ".sourceHandle",
+                                     "Classifier has a wired branch_exception edge but "
+                                     "exceptionSwitch is not enabled — the exception "
+                                     "branch only fires when the exception mechanism is "
+                                     "on. Set exceptionSwitch=true, or remove the edge "
+                                     "if you don't want a wired exception fallback")
+                    elif suffix == "other":
+                        # The built-in Other edge must be name="_other" + condition=""
+                        # (empty string, not null). name=null makes the platform render
+                        # branch_other as an editable BLANK category instead of mapping
+                        # it to the built-in Other.
+                        if nx.get("name") != "_other":
+                            rep.err("BRANCH_OTHER_NAME", ep + ".name",
+                                    f"branch_other edge name must be \"_other\" (got {nx.get('name')!r}) "
+                                    "— otherwise the platform renders it as an editable blank "
+                                    "category instead of the built-in Other",
+                                    'Set name="_other" and condition="" (use branch_other() in the builder)')
+                    elif suffix:
+                        cond = nx.get("condition")
+                        cond_s = "" if cond is None else str(cond).strip()
+                        if not cond_s or cond_s.isdigit():
+                            rep.err("BRANCH_RULE_IS_ID", ep + ".condition",
+                                    f"Classifier branch '{nx.get('name') or suffix}' has "
+                                    f"{'an empty' if not cond_s else 'a numeric-id'} condition "
+                                    f"({cond!r}) — the routing rule must be natural-language "
+                                    "text here, not an id",
+                                    "Put the branch's routing rule text in `condition` "
+                                    "(use branch_edge(rule=...) in the builder)")
         if nid is not None:
             if not th:
                 rep.err("EDGE_TARGET_MISSING", ep + ".targetHandle",
@@ -551,10 +914,23 @@ def check_flow(flow_rule, rep):
         cid = c.get("id")
         if cid is None:
             rep.err("FLOW_COMP_ID", cp + ".id", "Component id cannot be empty")
+        elif isinstance(cid, bool) or not isinstance(cid, int):
+            # Backend BotFlowComponent.id is Integer (strict Jackson parsing): "1" (quoted) or
+            # "vueflow__node-..." fails import with 'value X is not allowed for field id'.
+            rep.err("FLOW_COMP_ID_NOT_INT", cp + ".id",
+                    f"Component id must be a bare integer (backend Integer), got {type(cid).__name__}: {cid!r}",
+                    'Write "id": 1, not "id": "1" or a vueflow__node-... string')
         elif cid in id_set:
             rep.err("FLOW_COMP_ID_DUP", cp + ".id", f"Duplicate component id: {cid}")
         else:
             id_set.add(cid)
+        # x / y are backend Integer fields — same strict parsing
+        for fld in ("x", "y"):
+            v = c.get(fld)
+            if v is not None and (isinstance(v, bool) or not isinstance(v, int)):
+                rep.err("FLOW_COMP_XY_NOT_INT", f"{cp}.{fld}",
+                        f"{fld} must be a bare integer (backend Integer), got {type(v).__name__}: {v!r}",
+                        f'Write "{fld}": 420, not a quoted number or float')
         if _is_blank(c.get("type")):
             rep.err("FLOW_COMP_TYPE", cp + ".type", "Component type cannot be empty")
         elif c.get("type") not in FLOW_COMPONENT_TYPES:
@@ -564,21 +940,87 @@ def check_flow(flow_rule, rep):
     # component id -> type (for target-handle key validation)
     comp_type_by_id = {c.get("id"): c.get("type") for c in comps if isinstance(c, dict)}
     # next-target validation + terminal nodes + enum / connection-handle integrity
+    edge_id_seen = set()
+    edge_sort_seen = set()
     for i, c in enumerate(comps):
         if not isinstance(c, dict):
             continue
         cp = f"$.flowRule.components[{i}]"
         ctype = c.get("type")
         nexts = c.get("nextComponents") or []
+        # Fan-out is legal: an output port MAY drive several edges to DIFFERENT targets
+        # ("Multi-out / fan-out: each branch (output) can connect to multiple parallel
+        # downstream nodes" — Connection rules). So a repeated sourceHandle alone is NOT
+        # an error. The genuine import artifact is a *duplicate edge* — the SAME
+        # (sourceHandle → target) appearing twice (e.g. an old `Exception`/`name=null`
+        # entry plus a new `_exception` one on the same port to the same node). That is
+        # dirty data (harmless to the engine — nextComponents is pass-through, no toMap —
+        # but it renders a doubled line and can grey the port). Flag only that.
+        line_seen = set()
         for k, nx in enumerate(nexts):
-            if isinstance(nx, dict) and nx.get("nextComponentId") is not None \
+            if not isinstance(nx, dict):
+                continue
+            line = (nx.get("sourceHandle"), nx.get("nextComponentId"))
+            if line[0] is not None and line[1] is not None:
+                if line in line_seen:
+                    rep.err("EDGE_DUP_HANDLE", f"{cp}.nextComponents[{k}]",
+                            f"Duplicate edge on component #{c.get('id')}: sourceHandle "
+                            f"{line[0]!r} → component {line[1]} appears more than once "
+                            "(typical import artifact: an old 'Exception'/name=null edge "
+                            "plus a new '_exception' one on the same port to the same "
+                            "target). Fan-out to DIFFERENT targets is fine; only the exact "
+                            "same handle→target pair repeating is the problem",
+                            "Delete the duplicate edge (keep one edge per handle→target pair)")
+                line_seen.add(line)
+            if nx.get("nextComponentId") is not None \
                     and nx.get("nextComponentId") not in id_set:
                 rep.err("FLOW_NEXT_MISSING", f"{cp}.nextComponents[{k}].nextComponentId",
                         f"Points to a non-existent component: {nx.get('nextComponentId')}")
+            eid = nx.get("id")
+            if isinstance(eid, int) and not isinstance(eid, bool):
+                if eid in edge_id_seen:
+                    rep.err("EDGE_ID_DUP", f"{cp}.nextComponents[{k}].id",
+                            f"Duplicate edge id: {eid}", "Edge ids must be unique, e.g. 100000+seq")
+                edge_id_seen.add(eid)
+            # `sort` must be globally unique across all edges (real exports set sort == id).
+            # A per-node counter (1, 2, …) collides across nodes and makes the canvas
+            # mis-render — branch target nodes render greyed/unusable.
+            esort = nx.get("sort")
+            if isinstance(esort, int) and not isinstance(esort, bool):
+                if esort in edge_sort_seen:
+                    rep.err("EDGE_SORT_DUP", f"{cp}.nextComponents[{k}].sort",
+                            f"Duplicate edge sort: {esort} — sort must be globally unique "
+                            "(collisions grey out branch target nodes on the canvas)",
+                            "Set sort equal to the edge id (a unique 100000+seq integer)")
+                edge_sort_seen.add(esort)
         if ctype in {"Output", "Human"} and nexts:
             rep.warn("FLOW_TERMINAL", cp, f"{ctype} is a terminal node and usually should have no downstream")
         if ctype not in {"Output", "Human", "Message"} and not nexts:
             rep.warn("FLOW_NO_NEXT", cp, f"The {ctype} component has no downstream connection; please confirm whether a branch was missed")
+        # A Message (pass-through) component's `content` must be a JSON string keyed by
+        # contentType (e.g. '{"Text":"..."}'); a plain string renders an empty message.
+        if ctype == "Message" and c.get("content") is not None:
+            ct = c.get("contentType") or "Text"
+            raw = c.get("content")
+            ok = False
+            if isinstance(raw, str):
+                try:
+                    d = json.loads(raw)
+                    ok = isinstance(d, dict) and ct in d
+                except (ValueError, TypeError):
+                    ok = False
+            if not ok:
+                rep.err("MSG_CONTENT_NOT_JSON", cp + ".content",
+                        f"Message #{c.get('id')} content must be a JSON string keyed by "
+                        f'contentType, e.g. {{"{ct}":"...text..."}} — a plain string renders empty',
+                        "Use message_content(text, content_type) in the builder")
+        # LLM-driven nodes need maxRespTokens, or the canvas shows an empty "Maximum Response".
+        if ctype in {"LLM", "Branch", "Condition", "ChatGather", "FormGather"}:
+            mrt = c.get("maxRespTokens")
+            if mrt is None or (isinstance(mrt, str) and not mrt.strip()):
+                rep.warn("COMP_MAX_TOKENS_NULL", cp + ".maxRespTokens",
+                         f"{ctype} #{c.get('id')} has no maxRespTokens — the canvas shows an "
+                         "empty 'Maximum Response'; default it (e.g. 4096)")
         _check_component_enums(c, cp, rep)
         _check_component_edges(c, cp, comp_type_by_id, rep)
 
@@ -644,6 +1086,651 @@ def _range(v, low, high, path, rep, exclusive_high=False):
         rep.err("VAL_RANGE", path, f"{path}={f} is out of range {bound}")
 
 
+# --------------------------- L7 LoopAgent (clawRule) ---------------------------
+# Sources: backend .../bean/entity/ClawFlow.java + ClawFlowComponent.java + ClawFlowNext.java,
+#   .../consts/ClawComponentTypes.java, .../helper/ClawDefaultsHelper.java (default topology),
+#   .../helper/ClawLoopControlValidator.java (RANGE CHECK RUNS ON THE IMPORT PATH),
+#   .../service/exportimport/ClawRuleTransferHelper.java + ImportSecurityScanner.java,
+#   engine ailab-claw-engine/.../csagent/botFlowAdapter.ts + types/botFlow.ts,
+#   frontend .../features/claw-bot/data/claw-rule-codec.ts
+
+CLAW_CENTER_TYPE = "ClawCenter"
+# Contractual ids + order (ClawDefaultsHelper == claw-topology.ts SATELLITES, sort 0..6).
+CLAW_SATELLITES = [("keyEvent-1", "ClawKeyEvent"), ("handoff-1", "Human"),
+                   ("knowledge-1", "Dataset"), ("skills-1", "ClawSkill"),
+                   ("tools-1", "ToolApi"), ("database-1", "ClawDB"),
+                   ("subagent-1", "ClawSubAgent")]
+CLAW_COMPONENT_TYPES = {"ClawCenter", "ClawKeyEvent", "ClawSkill", "ClawDB", "ClawSubAgent",
+                        "ClawModule", "Human", "Dataset", "ToolApi"}
+MAX_CLAW_COMPONENTS = 64          # ImportSecurityScanner.MAX_CLAW_COMPONENTS
+MAX_CLAW_SKILL_REFS = 10          # claw-rule-codec.ts MAX_CLAW_SKILL_REFS
+MAX_PRIVATE_SKILLS = 50           # ImportSecurityScanner.MAX_PRIVATE_SKILLS
+CLAW_SKILL_REF_SOURCES = {"SYSTEM", "ORGANIZATION"}
+CLAW_SEARCH_MODES = {"mix", "semantics", "keyword"}
+CLAW_SEVERITIES = {"low", "normal", "high", "urgent"}
+CLAW_MESSAGE_MODES = {"QUEUE", "APPEND"}          # BotMessageModeEnum (LoopAgent only)
+# Retired knowledge keys: read-tolerated by the engine, never written by the platform.
+CLAW_RETIRED_KNOWLEDGE_KEYS = ("customKnowledgeType", "enhancementMessageSwitch",
+                               "docCorrelationSwitch", "noCorrelationResponse")
+# Fields the engine does not consume at all - configuring them changes nothing.
+CLAW_INERT_KEYEVENT_KEYS = ("titleStrategy", "autoCreateOnSpawn", "autoResolveIdleDays",
+                            "slaHighMs", "slaNormalMs", "keyEventTypes", "triggerPrompt")
+# LoopAgent brain model. Its models come from the AMH LLM gateway; a valid id comes
+# from GET /v1/model/list?org_id=<org>&agent_type=LOOP_AGENT (that filter is required -
+# only it returns gateway ids) or from an export of the target agent. This is the
+# pinned default the builder emits when neither is available.
+CLAW_DEFAULT_MODEL = "0ec52e3e7dfc000f9470eb15"
+CLAW_DEFAULT_MODEL_NAME = "GPT-5.6-Luna"
+# Top-level fields from the plain-Agent (QuestionAnswer) schema. A LoopAgent's model
+# and sampling params live in clawRule -> center.content.llm; the backend neither
+# reads nor backfills these bot-level copies and omits them from LoopAgent exports,
+# so anything found here is residue from a hand-edit or an older generator.
+CLAW_PLAIN_AGENT_FIELDS = {
+    "chatModelVersionId": "the brain model is clawRule center.content.llm.model",
+    "modelDynamicParams": "sampling params are clawRule center.content.llm.modelDynamicParams",
+    "creativityLevel": "temperature is a plain-Agent field and is not read here",
+    "maxRespTokens": "the response cap is clawRule center.content.llm.maxTokens",
+    "reasoningEffort": "reasoning is driven by the LoopAgent engine, not a bot-level field",
+    "reasoningEnabled": "reasoning is driven by the LoopAgent engine, not a bot-level field",
+    "showReasoning": "reasoning is driven by the LoopAgent engine, not a bot-level field",
+    "databaseTableIds": "data tables are picked in the ClawDB satellite (tableIds)",
+}
+_HEX24_RE = re.compile(r"^[0-9a-fA-F]{24}$")
+_PRIVATE_HOST_RE = re.compile(
+    r"^(localhost|127\.|0\.0\.0\.0$|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2[0-9]|3[01])\.)")
+
+
+def _public_http_url(url):
+    """Return an error string if `url` is not a public http(s) URL, else None.
+
+    Mirrors ImportSecurityScanner.checkUrl: templated ({{var}}) and relative URLs
+    are skipped, non-http(s) schemes are rejected, internal/loopback/link-local
+    hosts (incl. the 169.254.169.254 cloud-metadata address) are rejected.
+    """
+    if not isinstance(url, str) or not url.strip():
+        return None
+    u = url.strip()
+    if "{{" in u or "://" not in u:
+        return None
+    low = u.lower()
+    if not (low.startswith("http://") or low.startswith("https://")):
+        return "only http/https URLs are allowed"
+    host = low.split("://", 1)[1].split("/", 1)[0].split("@")[-1].split(":")[0]
+    if _PRIVATE_HOST_RE.match(host) or host.endswith(".local"):
+        return "points at an internal/loopback/link-local address (%s)" % host
+    return None
+
+
+def _claw_int_range(value, low, high, path, rep, code, label):
+    """Integer range check with the backend's strictness (bools and floats are not ints)."""
+    if value is None:
+        return
+    if isinstance(value, bool) or not isinstance(value, int):
+        rep.err(code, path, "%s must be an integer, got %r" % (label, value),
+                "Write a bare integer (a float or a quoted number is rejected on import)")
+        return
+    if value < low or (high is not None and value > high):
+        bound = "[%s, %s]" % (low, "inf" if high is None else high)
+        rep.err(code, path, "%s=%s is out of range %s" % (label, value, bound),
+                "Bring the value inside %s" % bound)
+
+
+def _claw_find(components, ctype):
+    return [c for c in components if isinstance(c, dict) and c.get("type") == ctype]
+
+
+def _check_claw_center(center, rep):
+    base = "$.clawRule.components[center]"
+    content = center.get("content")
+    if not isinstance(content, dict):
+        rep.err("CLAW_CENTER_CONTENT", base + ".content",
+                "ClawCenter.content must be an object",
+                "Emit it with build_gptbots_loopagent.claw_center()")
+        return
+    if content.get("enabled") is False:
+        rep.err("CLAW_CENTER_DISABLED", base + ".content.enabled",
+                "center.content.enabled=false is a kill switch - the engine answers 40300 "
+                "(ClawAgent disabled) on every turn",
+                "Set it to true; there is no UI toggle for this field")
+
+    llm = content.get("llm")
+    if not isinstance(llm, dict):
+        rep.err("CLAW_CENTER_LLM", base + ".content.llm",
+                "center.content.llm must be an object {model, baseUrl, maxTokens}")
+    else:
+        model = llm.get("model")
+        # Not `_is_blank`: 0 / [] / {} / false are just as un-routable as "" and hit the
+        # identical failure (50101, and the target's model wiped on import-as-version),
+        # so anything that is not a non-empty string is the empty case.
+        if not isinstance(model, str) or not model.strip():
+            # fixLoopAgentCenterModel returns early on a blank id — it is NOT backfilled,
+            # on either import path. The imported agent therefore has no brain model and
+            # the engine fails the first frame with 50101 "No LLM credentials". Worse, on
+            # import-as-version this OVERWRITES the model the target already had. There is
+            # no recovery inside the file, so this is an error, not a warning.
+            rep.err("CLAW_MODEL_EMPTY", base + ".content.llm.model",
+                    "the brain model is empty (%r is not a non-empty model_version_id string) "
+                    "— the import does not backfill it (a blank id "
+                    "is returned early, unlike a stale one), so the agent answers 50101 " % (model,) +
+                    "'No LLM credentials' on the first message, and importing into an "
+                    "EXISTING LoopAgent wipes the model that target had",
+                    "Updating an existing LoopAgent: copy the model_version_id from "
+                    "clawRule center.content.llm.model in an export of that agent. New agent: "
+                    "query one with GET /v1/model/list?org_id=<org>&agent_type=LOOP_AGENT "
+                    "(the AMH gateway catalogue; that filter is required), or fall back to "
+                    "the pinned default %s (%s)" % (CLAW_DEFAULT_MODEL, CLAW_DEFAULT_MODEL_NAME))
+        elif not _HEX24_RE.match(model.strip()):
+            rep.warn("CLAW_MODEL_NAME_AS_ID", base + ".content.llm.model",
+                     "%r does not look like an AMH gateway model_version_id (24-hex opaque id)"
+                     % model,
+                     "A readable model name cannot be routed by the gateway (first frame fails "
+                     "with 50101). Use an id from GET /v1/model/list?agent_type=LOOP_AGENT or "
+                     "from an export of the target agent, or the pinned default %s (%s) — "
+                     "never a name, and never blank"
+                     % (CLAW_DEFAULT_MODEL, CLAW_DEFAULT_MODEL_NAME))
+        bad = _public_http_url(llm.get("baseUrl"))
+        if bad:
+            rep.err("CLAW_BASEURL_SSRF", base + ".content.llm.baseUrl",
+                    "llm.baseUrl %s" % bad,
+                    "Use null (normal case) or a public http(s) URL - the import security scan "
+                    "rejects internal addresses")
+        _claw_int_range(llm.get("maxTokens"), 1, None, base + ".content.llm.maxTokens", rep,
+                        "CLAW_MAX_TOKENS", "llm.maxTokens")
+
+    loop = content.get("loop")
+    if loop is not None and not isinstance(loop, dict):
+        rep.err("CLAW_LOOP_SHAPE", base + ".content.loop", "center.content.loop must be an object")
+    elif isinstance(loop, dict):
+        # ClawLoopControlValidator runs on the import path too, so these are hard errors.
+        _claw_int_range(loop.get("maxTurns"), 1, 100, base + ".content.loop.maxTurns", rep,
+                        "CLAW_LOOP_RANGE", "loop.maxTurns")
+        _claw_int_range(loop.get("maxErrors"), 0, 50, base + ".content.loop.maxErrors", rep,
+                        "CLAW_LOOP_RANGE", "loop.maxErrors")
+        _claw_int_range(loop.get("maxBudgetInputTokens"), 0, None,
+                        base + ".content.loop.maxBudgetInputTokens", rep,
+                        "CLAW_LOOP_RANGE", "loop.maxBudgetInputTokens")
+
+    prompts = content.get("prompts")
+    if prompts is not None and not isinstance(prompts, dict):
+        rep.err("CLAW_PROMPTS_SHAPE", base + ".content.prompts",
+                "center.content.prompts must be an object; `persona` is the only editable key")
+    elif isinstance(prompts, dict):
+        for key in ("persona", "style", "routing"):
+            value = prompts.get(key)
+            if value is not None and not isinstance(value, str):
+                rep.err("CLAW_PROMPT_TYPE", base + ".content.prompts." + key,
+                        "prompts.%s must be a string (\"\" means \"use the engine default\")" % key)
+            elif isinstance(value, str):
+                _check_single_brace_vars(value, base + ".content.prompts." + key, rep)
+        if prompts.get("mainAgentBase") and not prompts.get("persona"):
+            rep.warn("CLAW_PROMPT_LEGACY_ALIAS", base + ".content.prompts.mainAgentBase",
+                     "`mainAgentBase` is a deprecated alias for `persona`",
+                     "Rename the field to `persona`")
+        # The console entry points for `style` / `routing` (and the legacy `router`
+        # alias) were removed: persona is now the only editable prompt. The engine
+        # still reads these keys, so text left here silently shapes behaviour that
+        # nobody can see, edit or reset from the UI.
+        for key in ("style", "routing", "router"):
+            if not _is_blank(prompts.get(key)):
+                rep.warn("CLAW_PROMPT_NO_UI", base + ".content.prompts." + key,
+                         "`%s` carries text, but its console entry point has been removed — "
+                         "the engine still applies it while no operator can review, edit or "
+                         "reset it" % key,
+                         "Fold the content into `persona` (the only editable prompt) and "
+                         'leave this as ""')
+        if _is_blank(prompts.get("persona")):
+            rep.warn("CLAW_PERSONA_EMPTY", base + ".content.prompts.persona",
+                     "the identity prompt is empty - the engine ships no built-in persona, so the "
+                     "agent runs with no identity section (legal, but almost never intended)",
+                     "Write the identity prompt here; it is the highest-leverage field of a LoopAgent")
+
+    nexts = center.get("nextComponents")
+    if not isinstance(nexts, list) or len(nexts) != len(CLAW_SATELLITES):
+        rep.warn("CLAW_CENTER_EDGES", base + ".nextComponents",
+                 "the center should carry one edge per satellite (%d expected)" % len(CLAW_SATELLITES),
+                 "Emit them as {id:\"center-><sat>\", nextComponentId:\"<sat>\", sort:<0..6>}")
+    else:
+        for i, edge in enumerate(nexts):
+            ep = "%s.nextComponents[%d]" % (base, i)
+            if not isinstance(edge, dict):
+                rep.err("CLAW_EDGE_SHAPE", ep, "each nextComponents entry must be an object")
+                continue
+            target = edge.get("nextComponentId")
+            if not isinstance(target, str) or not target:
+                rep.err("CLAW_EDGE_ID_NOT_STRING", ep + ".nextComponentId",
+                        "nextComponentId must be a non-empty STRING on a LoopAgent "
+                        "(FlowAgent uses integers; Claw matches string handles)")
+            sort = edge.get("sort")
+            if sort is not None and (isinstance(sort, bool) or not isinstance(sort, int)):
+                rep.err("CLAW_EDGE_SORT", ep + ".sort", "sort must be an integer")
+
+
+def _check_claw_knowledge(content, path, rep):
+    _claw_int_range(content.get("matchDataLimit"), 1, 50, path + ".matchDataLimit", rep,
+                    "CLAW_KB_RANGE", "matchDataLimit")
+    _range(content.get("docCorrelation"), 0.0, 1.0, path + ".docCorrelation", rep)
+    _range(content.get("embeddingRate"), 0.0, 1.0, path + ".embeddingRate", rep)
+    _check_enum(content.get("searchMode"), CLAW_SEARCH_MODES, "CLAW_KB_SEARCH_MODE",
+                path + ".searchMode", rep, "searchMode")
+    hop = content.get("graphHopLimit")
+    if hop is not None:
+        _claw_int_range(hop, 1, 5, path + ".graphHopLimit", rep, "CLAW_KB_RANGE", "graphHopLimit")
+    logic = content.get("metadataFilterLogic")
+    if logic is not None and logic not in ("AND", "OR"):
+        rep.err("CLAW_KB_FILTER_LOGIC", path + ".metadataFilterLogic",
+                "metadataFilterLogic must be AND or OR, got %r" % logic)
+    for key in CLAW_RETIRED_KNOWLEDGE_KEYS:
+        if key in content:
+            rep.warn("CLAW_RETIRED_KNOWLEDGE_KEY", path + "." + key,
+                     "`%s` is retired for LoopAgent (read-tolerated, never written)" % key,
+                     "Remove it - the engine decides when to search")
+
+
+def _check_claw_skills(content, path, rep):
+    refs = content.get("skillRefs")
+    if refs is None:
+        return
+    if not isinstance(refs, list):
+        rep.err("CLAW_SKILL_REFS_SHAPE", path + ".skillRefs", "skillRefs must be a list")
+        return
+    if len(refs) > MAX_CLAW_SKILL_REFS:
+        rep.err("CLAW_SKILL_REFS_MAX", path + ".skillRefs",
+                "at most %d skills may be attached to one agent (got %d)"
+                % (MAX_CLAW_SKILL_REFS, len(refs)))
+    for i, ref in enumerate(refs):
+        rp = "%s.skillRefs[%d]" % (path, i)
+        if not isinstance(ref, dict):
+            rep.err("CLAW_SKILL_REF_SHAPE", rp, "each skillRef must be {skillId, enabled, source}")
+            continue
+        if not isinstance(ref.get("skillId"), str) or not ref.get("skillId"):
+            rep.err("CLAW_SKILL_REF_ID", rp + ".skillId", "skillId must be a non-empty string")
+        if not isinstance(ref.get("enabled"), bool):
+            rep.err("CLAW_SKILL_REF_ENABLED", rp + ".enabled",
+                    "enabled must be a boolean - a malformed row is dropped silently on read")
+        if ref.get("source") not in CLAW_SKILL_REF_SOURCES:
+            rep.err("CLAW_SKILL_REF_SOURCE", rp + ".source",
+                    "source must be one of %s, got %r"
+                    % (sorted(CLAW_SKILL_REF_SOURCES), ref.get("source")),
+                    "An unknown source makes the whole row malformed and it is dropped on read")
+
+
+def check_claw_rule(cfg, rep):
+    """Validate a LoopAgent config: its LoopAgent-only top-level fields, then the clawRule topology."""
+    # Top-level fields FIRST. They do not depend on the topology, and a file whose clawRule
+    # is missing or malformed is precisely the one most likely to carry plain-Agent residue
+    # — a QuestionAnswer bot relabelled LoopAgent by hand. Reporting only CLAW_RULE_MISSING
+    # and returning would hide every one of those findings.
+    check_claw_top_level(cfg, rep)
+    rule = cfg.get("clawRule")
+    if not isinstance(rule, dict):
+        rep.err("CLAW_RULE_MISSING", "$.clawRule",
+                "a LoopAgent must carry a clawRule object",
+                "Generate it with scripts/build_gptbots_loopagent.py (1 ClawCenter + 7 satellites)")
+        return
+    components = rule.get("components")
+    if not isinstance(components, list) or not components:
+        rep.err("CLAW_COMPONENTS_MISSING", "$.clawRule.components",
+                "clawRule.components must be a non-empty list")
+        return
+    if len(components) > MAX_CLAW_COMPONENTS:
+        rep.err("CLAW_TOO_MANY_COMPONENTS", "$.clawRule.components",
+                "clawRule has too many components (%d > %d) - the import security scan rejects it"
+                % (len(components), MAX_CLAW_COMPONENTS),
+                "The legal topology is 8: 1 ClawCenter + 7 satellites")
+
+    seen_ids = set()
+    by_id = {}
+    for i, comp in enumerate(components):
+        cp = "$.clawRule.components[%d]" % i
+        if not isinstance(comp, dict):
+            rep.err("CLAW_COMP_SHAPE", cp, "each component must be an object")
+            continue
+        cid = comp.get("id")
+        if not isinstance(cid, str) or not cid:
+            rep.err("CLAW_COMP_ID_NOT_STRING", cp + ".id",
+                    "component id must be a non-empty STRING on a LoopAgent "
+                    "(got %r) - FlowAgent's integer ids do not apply here" % (cid,))
+        else:
+            if cid in seen_ids:
+                rep.err("CLAW_COMP_ID_DUP", cp + ".id", "duplicate component id %r" % cid)
+            seen_ids.add(cid)
+            by_id[cid] = comp
+        ctype = comp.get("type")
+        if not isinstance(ctype, str) or not ctype:
+            rep.err("CLAW_COMP_TYPE", cp + ".type", "component type must be a non-empty string")
+        elif ctype not in CLAW_COMPONENT_TYPES:
+            rep.warn("CLAW_COMP_TYPE_UNKNOWN", cp + ".type",
+                     "unknown Claw component type %r - the engine ignores it" % ctype,
+                     "Use one of: " + ", ".join(sorted(CLAW_COMPONENT_TYPES)))
+        if comp.get("content") is not None and not isinstance(comp.get("content"), dict):
+            rep.err("CLAW_COMP_CONTENT", cp + ".content", "component content must be an object")
+        if ctype != CLAW_CENTER_TYPE and comp.get("nextComponents"):
+            rep.warn("CLAW_SATELLITE_EDGES", cp + ".nextComponents",
+                     "satellites carry no outgoing edges in the radial topology",
+                     "Drop the field; only the center owns edges")
+
+    centers = _claw_find(components, CLAW_CENTER_TYPE)
+    if not centers:
+        rep.err("CLAW_CENTER_MISSING", "$.clawRule.components",
+                "no ClawCenter component - the engine rejects the rule with "
+                "\"center node required\" (40001 botRule invalid), and the import silently "
+                "replaces the whole rule with the platform default topology",
+                "Add the center node (build_gptbots_loopagent.claw_center())")
+    else:
+        if len(centers) > 1:
+            rep.err("CLAW_CENTER_DUPLICATE", "$.clawRule.components",
+                    "%d ClawCenter components - exactly one is allowed" % len(centers))
+        _check_claw_center(centers[0], rep)
+
+    for sid, stype in CLAW_SATELLITES:
+        comp = by_id.get(sid)
+        if comp is None:
+            if not _claw_find(components, stype):
+                rep.warn("CLAW_SATELLITE_MISSING", "$.clawRule.components",
+                         "satellite %s (%s) is missing - that capability is simply unavailable"
+                         % (sid, stype),
+                         "Emit the full default topology unless you deliberately dropped it")
+            continue
+        if comp.get("type") != stype:
+            rep.err("CLAW_SATELLITE_TYPE", "$.clawRule.components[%s].type" % sid,
+                    "satellite %s must have type %s, got %r" % (sid, stype, comp.get("type")))
+        content = comp.get("content")
+        if not isinstance(content, dict):
+            continue
+        path = "$.clawRule.components[%s].content" % sid
+        if stype == "Dataset":
+            _check_claw_knowledge(content, path, rep)
+            if content.get("docGroupIds") or content.get("datasetIds"):
+                rep.warn("CLAW_ENV_REFS", path + ".docGroupIds",
+                         "knowledge-base ids are environment-bound and are cleared when the file "
+                         "is imported as a new Agent",
+                         "Ship an empty list and bind the knowledge bases after import")
+        elif stype == "ClawDB":
+            if content.get("tableIds"):
+                rep.warn("CLAW_ENV_REFS", path + ".tableIds",
+                         "data-table ids are environment-bound and are cleared on import as a new Agent",
+                         "Ship an empty list and pick the tables after import")
+        elif stype == "ToolApi":
+            if content.get("pluginIds"):
+                rep.warn("CLAW_ENV_REFS", path + ".pluginIds",
+                         "plugin/MCP ids are filtered against the target organization on import",
+                         "Ship an empty list unless the target org owns exactly these plugins")
+        elif stype == "ClawSkill":
+            _check_claw_skills(content, path, rep)
+        elif stype == "ClawKeyEvent":
+            _check_enum(content.get("defaultSeverity"), CLAW_SEVERITIES, "CLAW_KEYEVENT_SEVERITY",
+                        path + ".defaultSeverity", rep, "defaultSeverity")
+        elif stype == "ClawSubAgent":
+            _claw_int_range(content.get("parallelCount"), 1, 5, path + ".parallelCount", rep,
+                            "CLAW_SUBAGENT_RANGE", "parallelCount")
+            if "maxWaitMinutes" in content:
+                rep.warn("CLAW_INERT_FIELD", path + ".maxWaitMinutes",
+                         "maxWaitMinutes is persisted but never consumed by the engine",
+                         "Remove it, and do not promise the behaviour to the user")
+
+
+def check_claw_top_level(cfg, rep):
+    """LoopAgent top-level fields — independent of the clawRule topology (see check_claw_rule)."""
+    # --- plain-Agent residue on a LoopAgent -----------------------------------
+    # These are the fields a QuestionAnswer .bot carries. On a LoopAgent they are
+    # never read and never backfilled, so at best they are dead config that
+    # contradicts the clawRule the engine actually runs on. `chatModelVersionId` is
+    # the one that also breaks something: the Agent detail API derived
+    # supportImageRecognition from it, so the empty string an older generator wrote
+    # greyed out attachment upload on share pages and the widget.
+    for key, why in sorted(CLAW_PLAIN_AGENT_FIELDS.items()):
+        if key not in cfg:
+            continue
+        if key == "chatModelVersionId":
+            rep.err("CLAW_PLAIN_AGENT_FIELD", "$." + key,
+                    "`chatModelVersionId` is a plain-Agent field and must not appear on a "
+                    "LoopAgent - the backend neither reads nor backfills it, and the Agent "
+                    "detail API derived supportImageRecognition from it, so writing it here "
+                    "(even as \"\") greys out attachment upload on share pages and the widget",
+                    "Delete the key - a backend LoopAgent export omits it entirely. " + why)
+        else:
+            rep.warn("CLAW_PLAIN_AGENT_FIELD", "$." + key,
+                     "`%s` is a plain-Agent field with no effect on a LoopAgent - it is dead "
+                     "config that contradicts the clawRule the engine actually reads" % key,
+                     "Delete the key - a backend LoopAgent export omits it entirely. " + why)
+
+    # --- LoopAgent-only top-level fields -------------------------------------
+    if not _is_blank(cfg.get("prompt")):
+        rep.warn("CLAW_TOP_LEVEL_PROMPT", "$.prompt",
+                 "a LoopAgent's identity is clawRule.center.content.prompts.persona - the "
+                 "top-level prompt is dead text",
+                 "Move the text into the center's persona prompt and leave this empty")
+    if "clawToolTraceRecentRounds" in cfg:
+        _claw_int_range(cfg.get("clawToolTraceRecentRounds"), 0, 5,
+                        "$.clawToolTraceRecentRounds", rep, "CLAW_TOOL_TRACE_ROUNDS",
+                        "clawToolTraceRecentRounds")
+    mm = cfg.get("multiModal")
+    mmi = mm.get("multiModalInput") if isinstance(mm, dict) else None
+    if isinstance(mmi, dict):
+        mode = mmi.get("messageMode")
+        if mode is None:
+            rep.warn("CLAW_MESSAGE_MODE", "$.multiModal.multiModalInput.messageMode",
+                     "messageMode is unset - historical data is treated as QUEUE",
+                     "Set it explicitly to QUEUE (merge queued messages at the turn boundary) "
+                     "or APPEND (absorb them into the running turn)")
+        elif mode not in CLAW_MESSAGE_MODES:
+            rep.err("CLAW_MESSAGE_MODE", "$.multiModal.multiModalInput.messageMode",
+                    "messageMode must be QUEUE or APPEND, got %r" % mode)
+    skills = cfg.get("privateSkills")
+    if isinstance(skills, list):
+        if len(skills) > MAX_PRIVATE_SKILLS:
+            rep.err("CLAW_PRIVATE_SKILLS_MAX", "$.privateSkills",
+                    "at most %d embedded private skills are allowed (got %d)"
+                    % (MAX_PRIVATE_SKILLS, len(skills)))
+        for i, skill in enumerate(skills):
+            sp = "$.privateSkills[%d]" % i
+            if not isinstance(skill, dict):
+                rep.err("CLAW_PRIVATE_SKILL_SHAPE", sp, "each privateSkills entry must be an object")
+                continue
+            if _is_blank(skill.get("name")):
+                rep.err("CLAW_PRIVATE_SKILL_NAME", sp + ".name",
+                        "a skill without a name is discarded entirely on import")
+            if _is_blank(skill.get("skillMdContent")):
+                rep.warn("CLAW_PRIVATE_SKILL_BLANK", sp + ".skillMdContent",
+                         "a blank SKILL.md body is dropped at runtime "
+                         "(engine warns \"blank SKILL.md content - dropped\")")
+
+
+# --------------------------- L8 Audio Agent (multiModal) ---------------------------
+# Sources: backend .../bean/entity/BotMultiModal.java (+ audio/*.java),
+#   .../helper/audio/AudioConfigValidator.java (server-side ranges/enums),
+#   .../common/enums/AudioEngineMode.java + Bot*Enum, frontend types/audio-agent.ts
+
+AUDIO_ENGINE_MODES = {"REALTIME", "ASR_LLM_TTS", "LLM_TTS"}
+AUDIO_VOICES = {"none", "alloy", "echo", "fable", "onyx", "nova", "shimmer"}
+AUDIO_QUALITY = {"DEFAULT", "HD"}                  # BotAudioModeType
+AUDIO_OUTPUT_MODES = {"TTS", "LLM", "DISABLED"}    # BotAudioOutputModeEnum
+AUDIO_INPUT_MODES = {"ASR", "LLM", "DISABLED"}     # BotAudioModeEnum
+AUDIO_CHAT_MODES = {"Q_A", "INTERRUPT"}            # BotChatModeEnum
+AUDIO_IMAGE_MODES = {"auto", "low", "high"}        # BotImageModeType
+AUDIO_RECOGNITION_MODES = {"semantic", "server", "preset"}
+AUDIO_RESPONSE_SPEEDS = {"low", "medium", "high"}
+BG_SOUND_MODES = {"DISABLED", "PRESET", "CUSTOM"}
+AUDIO_WELCOME_KEYS = ("speakingAvatar", "waitingAvatar", "welcomeAudio", "welcomeMessage")
+
+
+def check_audio_config(cfg, rep):
+    """Validate an Audio Agent config: the multiModal voice block."""
+    mm = cfg.get("multiModal")
+    if not isinstance(mm, dict):
+        rep.err("AUDIO_MULTIMODAL_MISSING", "$.multiModal",
+                "an Audio Agent must carry a multiModal block",
+                "Generate it with scripts/build_gptbots_audioagent.py")
+        return
+
+    mode = mm.get("engineMode")
+    if mode is None:
+        rep.err("AUDIO_ENGINE_MODE", "$.multiModal.engineMode",
+                "engineMode is required - without it the agent cannot start a voice session "
+                "(\"engineMode not configured\")",
+                "Set REALTIME, ASR_LLM_TTS or LLM_TTS")
+    elif mode not in AUDIO_ENGINE_MODES:
+        rep.err("AUDIO_ENGINE_MODE", "$.multiModal.engineMode",
+                "invalid engineMode: %r" % mode,
+                "Use one of: " + ", ".join(sorted(AUDIO_ENGINE_MODES)))
+
+    if _is_blank(mm.get("identityPrompt")):
+        rep.warn("AUDIO_IDENTITY_PROMPT_EMPTY", "$.multiModal.identityPrompt",
+                 "the voice session runs multiModal.identityPrompt, not the top-level prompt - "
+                 "it is empty",
+                 "Write the identity prompt here, phrased for speech (short sentences, no "
+                 "markdown, no URLs read aloud)")
+    else:
+        _check_single_brace_vars(mm.get("identityPrompt"), "$.multiModal.identityPrompt", rep)
+
+    tokens = cfg.get("maxRespTokens")
+    if tokens is not None and (isinstance(tokens, bool) or not isinstance(tokens, int) or tokens <= 0):
+        rep.err("AUDIO_MAX_RESP_TOKENS", "$.maxRespTokens",
+                "maxRespTokens must be a positive integer, got %r" % (tokens,),
+                "It must also stay below the chat model's context limit - the audio path budgets "
+                "knowledge/plugin tokens as tokensLimit - maxRespTokens")
+
+    mmi = mm.get("multiModalInput")
+    if isinstance(mmi, dict):
+        base = "$.multiModal.multiModalInput"
+        _check_enum(mmi.get("audioMode"), AUDIO_INPUT_MODES, "AUDIO_INPUT_MODE",
+                    base + ".audioMode", rep, "multiModalInput.audioMode")
+        _check_enum(mmi.get("chatMode"), AUDIO_CHAT_MODES, "AUDIO_CHAT_MODE",
+                    base + ".chatMode", rep, "multiModalInput.chatMode")
+        _check_enum(mmi.get("fileMode"), FILE_MODES, "AUDIO_FILE_MODE",
+                    base + ".fileMode", rep, "multiModalInput.fileMode")
+        _check_enum(mmi.get("imageMode"), AUDIO_IMAGE_MODES, "AUDIO_IMAGE_MODE",
+                    base + ".imageMode", rep, "multiModalInput.imageMode")
+        _check_list_enum(mmi.get("fileSupportTypes"), MULTI_MODAL_DATA_TYPES,
+                         "AUDIO_FILE_TYPES", base + ".fileSupportTypes", rep, "fileSupportTypes")
+        lang = mmi.get("sourceLang")
+        if lang is not None:
+            if not isinstance(lang, dict):
+                rep.err("AUDIO_SOURCE_LANG", base + ".sourceLang",
+                        "sourceLang must be an object containing a boolean autoDetect")
+            elif not isinstance(lang.get("autoDetect"), bool):
+                rep.err("AUDIO_SOURCE_LANG", base + ".sourceLang.autoDetect",
+                        "sourceLang.autoDetect must be a BOOLEAN, got %r" % (lang.get("autoDetect"),),
+                        'Use {"autoDetect": true} or {"autoDetect": false, "languages": ["en"]}')
+
+    mmo = mm.get("multiModalOutput")
+    if isinstance(mmo, dict):
+        base = "$.multiModal.multiModalOutput"
+        _check_enum(mmo.get("audioVoice"), AUDIO_VOICES, "AUDIO_VOICE",
+                    base + ".audioVoice", rep, "multiModalOutput.audioVoice")
+        _check_enum(mmo.get("audioMode"), AUDIO_QUALITY, "AUDIO_QUALITY",
+                    base + ".audioMode", rep, "multiModalOutput.audioMode")
+        _check_enum(mmo.get("audioModeOutput"), AUDIO_OUTPUT_MODES, "AUDIO_OUTPUT_MODE",
+                    base + ".audioModeOutput", rep, "multiModalOutput.audioModeOutput")
+        sf = mmo.get("symbolFilter")
+        if sf is not None:
+            if not isinstance(sf, dict):
+                rep.err("AUDIO_SYMBOL_FILTER", base + ".symbolFilter",
+                        "symbolFilter must be {remove: [...], replace: [{from, to}]}")
+            else:
+                for j, rule in enumerate(sf.get("replace") or []):
+                    if not isinstance(rule, dict) or "from" not in rule or "to" not in rule:
+                        rep.err("AUDIO_SYMBOL_FILTER",
+                                "%s.symbolFilter.replace[%d]" % (base, j),
+                                "each replace rule must be {from, to}")
+
+    vad = mm.get("vad")
+    if isinstance(vad, dict):
+        base = "$.multiModal.vad"
+        _claw_int_range(vad.get("pauseThresholdMs"), 0, 5000, base + ".pauseThresholdMs", rep,
+                        "AUDIO_CONFIG_RANGE", "vad.pauseThresholdMs")
+        _range(vad.get("interruptSensitivity"), 0.0, 1.0, base + ".interruptSensitivity", rep)
+        _range(vad.get("minVolume"), 0.0, 1.0, base + ".minVolume", rep)
+        _range(vad.get("activationThreshold"), 0.0, 1.0, base + ".activationThreshold", rep)
+        _check_enum(vad.get("recognitionMode"), AUDIO_RECOGNITION_MODES, "AUDIO_CONFIG_RANGE",
+                    base + ".recognitionMode", rep, "vad.recognitionMode")
+        _check_enum(vad.get("responseSpeed"), AUDIO_RESPONSE_SPEEDS, "AUDIO_CONFIG_RANGE",
+                    base + ".responseSpeed", rep, "vad.responseSpeed")
+
+    out = mm.get("output")
+    if isinstance(out, dict):
+        base = "$.multiModal.output"
+        _claw_int_range(out.get("bufferMs"), 0, 1500, base + ".bufferMs", rep,
+                        "AUDIO_CONFIG_RANGE", "output.bufferMs")
+        bg = out.get("bgSound")
+        if isinstance(bg, dict):
+            _check_enum(bg.get("mode"), BG_SOUND_MODES, "AUDIO_BG_SOUND_MODE",
+                        base + ".bgSound.mode", rep, "output.bgSound.mode")
+            _claw_int_range(bg.get("volume"), 1, 50, base + ".bgSound.volume", rep,
+                            "AUDIO_CONFIG_RANGE", "output.bgSound.volume")
+            bad = _public_http_url(bg.get("uploadUrl"))
+            if bad:
+                rep.err("AUDIO_URL", base + ".bgSound.uploadUrl", "uploadUrl %s" % bad)
+
+    cc = mm.get("callControl")
+    if isinstance(cc, dict):
+        base = "$.multiModal.callControl"
+        cold = cc.get("coldStart")
+        if isinstance(cold, dict):
+            _claw_int_range(cold.get("silenceThresholdSec"), 5, 60,
+                            base + ".coldStart.silenceThresholdSec", rep,
+                            "AUDIO_CONFIG_RANGE", "callControl.coldStart.silenceThresholdSec")
+        hangup = cc.get("hangup")
+        if isinstance(hangup, dict):
+            _claw_int_range(hangup.get("maxCallSec"), 30, 3600, base + ".hangup.maxCallSec", rep,
+                            "AUDIO_CONFIG_RANGE", "callControl.hangup.maxCallSec")
+            _claw_int_range(hangup.get("maxSilenceSec"), 1, 180, base + ".hangup.maxSilenceSec",
+                            rep, "AUDIO_CONFIG_RANGE", "callControl.hangup.maxSilenceSec")
+            _claw_int_range(hangup.get("maxSilenceCount"), 1, 100,
+                            base + ".hangup.maxSilenceCount", rep,
+                            "AUDIO_CONFIG_RANGE", "callControl.hangup.maxSilenceCount")
+
+    welcome = mm.get("welcome")
+    if isinstance(welcome, dict):
+        for key in AUDIO_WELCOME_KEYS:
+            value = welcome.get(key)
+            if value is None:
+                continue
+            if not isinstance(value, dict):
+                rep.err("AUDIO_WELCOME_SHAPE", "$.multiModal.welcome." + key,
+                        "%s must be a {language: value} map" % key)
+                continue
+            for lang, item in value.items():
+                wp = "$.multiModal.welcome.%s.%s" % (key, lang)
+                if not isinstance(item, str):
+                    rep.err("AUDIO_WELCOME_SHAPE", wp, "the value must be a string")
+                elif key != "welcomeMessage":
+                    bad = _public_http_url(item)
+                    if bad:
+                        rep.err("AUDIO_URL", wp, "media URL %s" % bad)
+
+
+# --------------------------- L9 cross-type block placement ---------------------------
+
+def check_cross_type_blocks(cfg, bot_type, rep):
+    """Warn when a type-specific block sits on the wrong botType (it is ignored on import)."""
+    if bot_type is None:
+        return
+    if cfg.get("clawRule") and bot_type != "LoopAgent":
+        rep.warn("XTYPE_CLAW_RULE", "$.clawRule",
+                 "clawRule only applies to botType=LoopAgent - it is ignored here",
+                 "Remove it, or set botType to LoopAgent")
+    if cfg.get("flowRule") and bot_type != "Flow":
+        rep.warn("XTYPE_FLOW_RULE", "$.flowRule",
+                 "flowRule only applies to botType=Flow - it is ignored here",
+                 "Remove it, or set botType to Flow")
+    if cfg.get("privateSkills") and bot_type != "LoopAgent":
+        rep.warn("XTYPE_PRIVATE_SKILLS", "$.privateSkills",
+                 "embedded private skills are a LoopAgent-only feature")
+    mm = cfg.get("multiModal")
+    if isinstance(mm, dict) and bot_type != "Audio":
+        for key in ("engineMode", "vad", "output", "callControl", "welcome", "identityPrompt"):
+            if mm.get(key):
+                rep.warn("XTYPE_AUDIO_BLOCK", "$.multiModal." + key,
+                         "`%s` is an Audio Agent field - it has no effect on botType=%s"
+                         % (key, bot_type))
+    mmi = mm.get("multiModalInput") if isinstance(mm, dict) else None
+    if isinstance(mmi, dict) and mmi.get("messageMode") and bot_type != "LoopAgent":
+        rep.warn("XTYPE_MESSAGE_MODE", "$.multiModal.multiModalInput.messageMode",
+                 "messageMode (QUEUE/APPEND) only applies to LoopAgent; other types keep it null")
+
+
+
 # ----------------------------- main flow -----------------------------
 
 def validate(cfg, raw_len):
@@ -658,6 +1745,11 @@ def validate(cfg, raw_len):
         check_flow(cfg.get("flowRule"), rep)
         if cfg.get("workflow"):
             check_workflow_graph(cfg.get("workflow"), rep, "$.workflow")
+    elif bot_type == "LoopAgent":
+        check_claw_rule(cfg, rep)
+    elif bot_type == "Audio":
+        check_audio_config(cfg, rep)
+    check_cross_type_blocks(cfg, bot_type, rep)
     check_secrets_and_refs(cfg, rep)
     check_human_config(cfg, rep)
     return rep

@@ -1,6 +1,6 @@
 # Create / optimize a GPTBots Agent (.bot)
 
-> Reference for the `GPTBots Skill` workflow when the target is a **QuestionAnswer Agent or MultiAgent**. Turn "scenario + requirements" (or a user-provided existing `.bot` file) into a **plaintext `.bot` config** (`exportType=BOT`, `botType=QuestionAnswer` or `MultiAgent`) that imports directly into the GPTBots platform.
+> Reference for the `GPTBots Skill` workflow when the target is a **QuestionAnswer Agent**. Turn "scenario + requirements" (or a user-provided existing `.bot` file) into a **plaintext `.bot` config** (`exportType=BOT`, `botType=QuestionAnswer`) that imports directly into the GPTBots platform.
 
 ## Workflow (follow the order strictly)
 
@@ -16,11 +16,14 @@ If the user provided an API key and wants to connect resources from an existing 
 Request header `Authorization: Bearer <API_KEY>`. Fill the real `docGroupIds`/table ids you found into the config; if not found, leave them blank (associate them on the platform after import).
 
 ### 3. Design and generate
-Start from the user's existing `.bot` (or a minimal valid skeleton when creating from scratch), and only change documented fields. Key points:
-- Required top-level fields: `formatVersion`, `exportType=BOT`, `exportTime`, `name`, `botType`.
+Start from the user's existing `.bot` (or generate the skeleton with `agent_config()` from `../scripts/build_gptbots_agent.py`, whose `save()` runs the validator), and only change documented fields. Keep the identity prompt external like every other bot — a `prompts/` folder with `identity.md` (one md per prompt), loaded via `load_prompts("prompts/")` and passed as `prompt=P["identity"]` — rather than embedding the long text in the script. Key points:
+- Required top-level fields: `formatVersion`, `exportType=BOT`, `exportTime`, `name`, `botType`. `exportTime` MUST be an epoch-milliseconds integer (Long, e.g. `1765077600000`) — an ISO string like `"2026-06-07T00:00:00Z"` fails import with `value not allowed for field exportTime`.
 - Model id (`chatModelVersionId`, etc.) **left blank or as a placeholder** — the backend import backfills the default model; inventing real ids will cause errors.
 - Plugin authentication, `apiSecrets`, cross-organization references **left blank** — import always clears them.
-- `creativityLevel ∈ [0,0.95)`; `MultiAgent` requires a valid planner node.
+- **Always include a top-level `multiModal` block, and a COMPLETE one.** The import does no backfill: a null `multiModalInput` NPEs the console auto-save (HTTP 500 on every save, backend regression 2025-12-02), and a bare `{"multiModalInput": {}}` additionally answers **every** `POST /v2/conversation/message` with `50000 NullPointerException` because the chat endpoint unboxes `multiModalInput.fileLimit`. `agent_config()` emits the known-good block automatically — don't hand-write it and don't guess the enum values. (`L0_MULTIMODAL_AUTOSAVE_NPE`, `L0_MULTIMODAL_FILE_LIMIT`)
+- `creativityLevel ∈ [0,0.95)` **or `null`** (the platform allows a null creativityLevel). Set `maxRespTokens` (default 4096).
+- **Field-name gotchas (confirmed against a real export):** the opening line is **`firstMessage`** (NOT `welcomeMessage`) and the suggested questions are **`presetQuestions`** (NOT `guidingQuestions`). The plausible-looking names are silently dropped on import, so the agent ships with no opening line / no suggested questions. `agent_config(first_message=..., preset_questions=[...])` emits the correct keys; the validator warns (`AGENT_WELCOME_FIELD` / `AGENT_PRESET_FIELD`) if the wrong ones appear.
+- Other documented top-level fields seen in real exports (pass via `**extra`, copying any enum-bearing block from a real export rather than guessing): `reasoningEffort`/`showReasoning`/`reasoningEnabled`, `modeType`, knowledge base (`dataEnable` + `docCorrelation`/`matchDataLimit`/`customKnowledgeType`/`embeddingRate`/`rerankSwitch`), `memoryEnable`/`longTermMemory`/`shortTermMemory`/`shortTermMemoryRound`, `toolsEnable`/`workflowEnable`+`associatedWorkflows`, `nextQuestion`+`systemPrompt`, `quickCommands`, `plugins`, `userProperties`.
 - **The identity `prompt` is the highest-leverage field in the whole config** — it drives the Agent's runtime quality and efficiency. Write it with extra care: clear role/goal/boundaries/output format in short imperative sentences, no filler, no internal contradictions (see *Prompt quality for LLM-capable nodes* in SKILL.md).
 
 ### 4. Quality check (mandatory; do not deliver if it fails)

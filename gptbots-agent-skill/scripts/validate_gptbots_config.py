@@ -37,6 +37,11 @@ import json
 import re
 import sys
 
+from gptbots_config_validator.bot_fields import (
+    check_bot_fields,
+    check_human_config as check_extended_human_config,
+)
+
 # Bot types this skill authors. Mirrors ai.altatech.oversea.common.enums.BotType, minus the
 # types this skill does not generate (MultiAgent, Clawsearch). "Claw" is the historical alias
 # of LoopAgent - the backend still accepts it on read, but always emit "LoopAgent".
@@ -1023,6 +1028,8 @@ def check_flow(flow_rule, rep):
                          "empty 'Maximum Response'; default it (e.g. 4096)")
         _check_component_enums(c, cp, rep)
         _check_component_edges(c, cp, comp_type_by_id, rep)
+        if ctype == "Human" and "humanConfig" in c:
+            check_extended_human_config(c.get("humanConfig"), cp + ".humanConfig", rep)
 
 
 # --------------------------- L5 secrets / refs ---------------------------
@@ -1751,7 +1758,7 @@ def validate(cfg, raw_len):
         check_audio_config(cfg, rep)
     check_cross_type_blocks(cfg, bot_type, rep)
     check_secrets_and_refs(cfg, rep)
-    check_human_config(cfg, rep)
+    check_bot_fields(cfg, rep)
     return rep
 
 

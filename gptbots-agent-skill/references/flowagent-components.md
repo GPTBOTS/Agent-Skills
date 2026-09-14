@@ -179,6 +179,8 @@ Assigns values to **user attributes or custom variables**, **deterministically**
 
 **Prerequisite (critical for imports):** at least one **user attribute or custom variable** must already exist in the workspace; otherwise there is no assignable target, the node can't be configured, and it **can't connect downstream**. **Importing a `.bot` does NOT auto-create these variables** — so a Variable node whose targets aren't pre-defined shows "No variables available" and its `variableSetValueConfigs` are silently dropped. For the common "collect fields → act" pattern you usually **don't need a Variable node at all**: route the ChatGather's collect-complete edge straight to the next step (e.g. human handoff); the collected fields + conversation context carry forward, and key events capture the business type/status. Only use Variable assignment when the target attributes are pre-defined in the workspace.
 
+Define custom variables in top-level `customVariables[]` and user attributes in top-level `userProperties[]`; see `./bot-config-fields.md`. A custom-variable assignment updates the conversation-scoped value, not the `.bot` default. The new value is available downstream immediately and persists for later turns in that conversation.
+
 **Config:** you can add **multiple assignments**, each independent; each = target variable + operation + value.
 - Operations: `Overwrite` (replace the original value) / `Append` (**`list` type only**, add an item to the end) / `Clear`.
 - Value: a literal, or `{{reference}}` (upstream output / user input / another variable).
@@ -223,6 +225,8 @@ Passes **a preconfigured piece of content** (a structured object) directly to th
 Hand off to a human — hand the conversation to a **third-party human customer-service system**, after which there is no more AI reply.
 
 The vendor is set in the top-level `humanConfig.manufacturer`. Its value **MUST be a `HumanManufacturerEnum` value, not a display name** — one of: `Intercom`, `Webhook`, `LiveChat`, `SoBot`, `ZohoSalesIQ`, `LiveDesk`, `Omnichat` (`Omnichat` = the Crescendo Lab vendor). A display name such as `"livechat"`, `"Livedesk"`, `"Zoho Sales IQ"` or `"Crescendo Lab"` will fail import with `Invalid import file: value "..." is not allowed for field "manufacturer"`. `humanConfig.status` is `enable` / `disable`.
+
+Service-tip fields are `humanConfig.sendHumanTipSwitch` and `humanConfig.multiLanguages`; use the exact schema and status codes in `./bot-config-fields.md`. Do not fill an omitted switch with a guessed default, because Flow Human + LiveDesk and existing LoopAgent + LiveChat intentionally interpret omission in opposite ways.
 
 ⚠️ **Also write `humanConfig` at the component level** (on the `Human` component itself), not only at the bot-entity level. The transfer-to-human config form renders from the component-level `humanConfig`; if it is missing the node's config shows up blank. The backend backfills entity→component on import, but the generator should set it directly on the component.
 

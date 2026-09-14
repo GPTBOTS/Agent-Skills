@@ -155,6 +155,7 @@ Returns the entity type (agent/workflow) and id; confirm the key is valid before
 ###  Trigger Agent/FlowAgent via conversation/messages
 - The request body structure for Agent and FlowAgent is consistent. For a new conversation, a conversationID should be generated first; for historical conversations, you can directly reuse the original conversationID.
 - Conversations/messages: `POST /v1/conversation` (create conversation), then `POST /v2/conversation/message` with `response_mode` `blocking` or `streaming`.
+- `conversation_config.custom_variables` supplies conversation-property values. Every key must already be defined by the Agent's top-level `.bot` `customVariables[]`; the values persist for that conversation and do not modify the Agent-wide defaults. See `./bot-config-fields.md`.
 - Request Example (blocking):
 ```
 curl -X POST 'https://api-${endpoint}.gptbots.ai/v2/conversation/message' \

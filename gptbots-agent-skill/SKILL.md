@@ -44,6 +44,7 @@ references/                   # how-to specs (read the one matching the task)
   org-devkey-api.md               # account DevKey APIs: orgs, model version IDs, Tool/MCP/Skill, create Agent/Workflow
   version-manage-api.md           # update / publish / roll back an existing target's version; LoopAgent private Skills (§7)
   organize-knowledge-base.md      # curate raw docs → import-ready Markdown / table / Q&A files
+  bot-config-fields.md            # human-service tips + variable/property .bot fields
   variables-reference.md / materials-mapping.md / workflow-nodes.md / flowagent-components.md
 scripts/
   validate_gptbots_config.py    # offline .bot/.flow quality check (mandatory self-check)
@@ -78,12 +79,15 @@ This skill does not bundle any config. The target `.bot` / `.flow` is **provided
 1. Read the user's `.bot` (or `.flow`) file to understand the current design. Identify its type from `botType` (`QuestionAnswer`/`Flow`/`LoopAgent`/`Audio`/`Workflow` — a legacy `Claw` means LoopAgent) and read the matching reference from the table above.
 2. Clarify what the user wants to change and gather their materials (FAQ/docs, data, examples). Do not invent requirements.
 3. Edit **only** the documented fields needed (see the matching `references/create-gptbots-*.md`). Keep model ids / plugin auth / cross-org references blank (the backend backfills or clears them on import) — **except a LoopAgent's `clawRule` model, which is never backfilled**: a blank one leaves the agent with no brain and wipes the target's, so carry the target's own id across or keep the builder's pinned default (see the LoopAgent reference §3).
+   - For service tips, localized human-service messages, custom variables/conversation properties, or user properties, also read `references/bot-config-fields.md`. Preserve an omitted `sendHumanTipSwitch` unless the user explicitly chooses a value, because its runtime default differs by handoff path.
 4. **Strip fields that don't belong to this `botType`.** An older file often carries residue from another type — most commonly plain-Agent model/sampling fields (`chatModelVersionId`, `creativityLevel`, `maxRespTokens`, `reasoning*`, `modelDynamicParams`, `databaseTableIds`) sitting on a LoopAgent, where nothing reads them and `chatModelVersionId` actively greys out attachment upload on share pages. The validator flags them (`CLAW_PLAIN_AGENT_FIELD` for plain-Agent fields on a LoopAgent; `XTYPE_*` for a whole block — `clawRule`, `flowRule`, `privateSkills`, the Audio voice keys — sitting on the wrong type); delete them rather than carrying them forward.
 5. For a **Workflow / FlowAgent**, generate an `overview.md` next to the output file containing a `## Flow (mermaid)` diagram of the new design, so the design intent stays reviewable.
 6. Run the quality check, then deliver (sections below).
 
 ### B. Create a new Agent or Workflow
 Pick the type from the table at the top, read **only that type's reference**, then quality-check and deliver. For a LoopAgent also read `references/loopagent-runtime.md` — its capabilities are silently gated, so a config that looks complete can still do nothing.
+
+Do not synthesize a new LoopAgent `clawRule`. A LoopAgent task requires an existing platform-exported `.bot`; preserve `clawRule` and edit only documented shared fields.
 
 ### C. Drive a published Agent/Workflow via the API
 For evaluation / quality assessment / RAG testing / scheduled triggering / data & knowledge-base management (including **creating a knowledge base** via `POST /v1/bot/knowledge/base/create`), follow `references/call-gptbots-api.md` (public Open API only).
@@ -153,7 +157,7 @@ Audio (`multiModal`) invariants live in their own references** (§3 and §4 resp
 - **Variable assignments** are `{variableName, operation, value}` with `operation` ∈ `Cover`/`Clear`/`Append` (capitalized). (`COMP_ENUM_VARIABLE_OPERATION`)
 
 ## Quality check (mandatory — never deliver a config that fails)
-After producing or editing any `.bot`/`.flow`, run:
+The validator requires Python 3.11 or newer. Check `python3 --version`; if it is older, use an available `python3.11`/`python3.12` interpreter. After producing or editing any `.bot`/`.flow`, run:
 ```
 python3 scripts/validate_gptbots_config.py <path/to/output>.bot
 ```

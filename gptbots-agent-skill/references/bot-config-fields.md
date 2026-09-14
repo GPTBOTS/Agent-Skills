@@ -134,7 +134,7 @@ For newly generated definitions, include `name`, `showName`, `type`, `value`, `d
 
 Preserve backend-managed typed-value fields if they already exist in an exported definition, but do not invent them in a new definition.
 
-Never generate `accountId` or nested `userProperties` inside a definition. Those fields contain per-user runtime data and are deliberately excluded by the backend export/import path.
+Never generate or populate `accountId` or nested `userProperties` inside a definition. Current backend exports can retain these keys as `null` placeholders; preserve them when editing an official export, but any non-null value is per-user runtime data and must fail privacy validation.
 
 ## Editing checklist
 

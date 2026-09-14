@@ -8,7 +8,10 @@ from typing import Literal, TypedDict
 import pytest
 
 VALIDATOR = (
-    Path(__file__).parents[1] / "gptbots-agent-skill" / "scripts" / "validate_gptbots_config.py"
+    Path(__file__).parents[1]
+    / "gptbots-agent-skill"
+    / "scripts"
+    / "validate_gptbots_config.py"
 )
 
 
@@ -148,7 +151,9 @@ def test_rejects_invalid_human_service_tip_fields(
 
 def test_warns_for_unknown_service_status_code(tmp_path: Path) -> None:
     config = _base_config()
-    config["humanConfig"] = {"multiLanguages": {"en_US": [{"code": 999, "text": "Future status"}]}}
+    config["humanConfig"] = {
+        "multiLanguages": {"en_US": [{"code": 999, "text": "Future status"}]}
+    }
 
     exit_code, result = _run_validator(tmp_path, config)
 
@@ -214,6 +219,10 @@ def test_warns_when_custom_variable_lacks_var_prefix(tmp_path: Path) -> None:
             [{"name": "tier", "type": "string", "accountId": "real-user"}],
             "USER_PROPERTY_RUNTIME_DATA",
         ),
+        (
+            [{"name": "tier", "type": "string", "userProperties": {"tier": "gold"}}],
+            "USER_PROPERTY_RUNTIME_DATA",
+        ),
     ],
 )
 def test_rejects_invalid_user_property_definitions(
@@ -228,6 +237,23 @@ def test_rejects_invalid_user_property_definitions(
 
     assert exit_code == 1
     assert expected_code in _codes(result, "errors")
+
+
+def test_accepts_null_runtime_placeholders_from_backend_export(tmp_path: Path) -> None:
+    config = _base_config()
+    config["userProperties"] = [
+        {
+            "name": "tier",
+            "type": "string",
+            "accountId": None,
+            "userProperties": None,
+        }
+    ]
+
+    exit_code, result = _run_validator(tmp_path, config)
+
+    assert exit_code == 0
+    assert "USER_PROPERTY_RUNTIME_DATA" not in _codes(result, "errors")
 
 
 def test_rejects_property_name_collision(tmp_path: Path) -> None:
@@ -271,4 +297,6 @@ def test_validates_human_config_inside_flow_component(tmp_path: Path) -> None:
 
     assert exit_code == 1
     assert "HUMAN_TIP_SWITCH_TYPE" in _codes(result, "errors")
-    assert result["errors"][0]["path"].startswith("$.flowRule.components[1].humanConfig")
+    assert result["errors"][0]["path"].startswith(
+        "$.flowRule.components[1].humanConfig"
+    )

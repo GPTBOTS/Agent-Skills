@@ -95,7 +95,7 @@
 - `type` 允许值为 `string`、`number`、`datetime`、`bool`、`list`。
 - `chatUpdate` 和 `chatQuery` 存在时必须是布尔值。
 - 用户属性重名，或者与 `customVariables` 重名时按错误处理，因为变量替换共用扁平命名空间。
-- 禁止生成 `accountId`、嵌套 `userProperties` 等运行时用户数据字段；发现这些字段时按隐私错误处理。
+- 禁止生成或填充 `accountId`、嵌套 `userProperties` 等运行时用户数据字段。STG 官方导出会保留值为 `null` 的占位键，编辑官方导出时允许原样保留；发现非空值时按隐私错误处理。
 
 所有新增顶层字段均保持可选，保证旧 `.bot` 文件继续通过校验。
 

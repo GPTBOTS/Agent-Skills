@@ -22,8 +22,15 @@
 - 正确的顶层与 Flow Human 组件级配置通过。
 - `sendHumanTipSwitch="true"`、`code="84"`、非法变量/属性类型、重复名称和跨数组名称冲突均失败并返回准确 JSON 路径。
 - 未知整数服务状态 code 只告警，以兼容后端未来扩展。
-- `accountId` 和嵌套 `userProperties` 被判定为隐私错误。
+- 非空的 `accountId` 和嵌套 `userProperties` 被判定为隐私错误；STG 官方导出的 `null` 占位键可通过，以保证导出文件可直接校验和再次导入。
 - 旧 `.bot` 完全不包含这些新字段时仍可通过。
 - Skill 明确要求用 Python 3.11+ 运行校验器；本机验证使用 Python 3.12。
+
+## STG 导入导出回环
+
+- 在 `https://stg.gptbots.ai` 成功导入 `latest-bot-config-valid.bot`，生成 Agent `Latest bot config fixture`。
+- 再次导出的 `.bot` 保留了 `humanConfig.sendHumanTipSwitch=true`、`humanConfig.multiLanguages.en` 的 `code=36/84` 提示语、`customVariables[]` 和 `userProperties[]` 七个定义字段。
+- STG 会为自定义变量和用户属性补充 ID、Bot/Project ID、时间等后端管理字段，并在用户属性中输出 `accountId: null`、`userProperties: null` 等空占位；校验器按官方导出行为兼容空占位，但继续阻断非空用户运行时数据。
+- 将 STG 导出的文件再次从产品页面导入成功；验收结束后两个测试 Agent 均已删除。
 
 用户属性的七个生成字段由 Skill 规范和有效 fixture 保证。校验器强制 `name`、`type`、布尔字段类型、名称唯一性及隐私边界，但不强制旧导出文件补齐非关键展示字段，避免破坏兼容性。

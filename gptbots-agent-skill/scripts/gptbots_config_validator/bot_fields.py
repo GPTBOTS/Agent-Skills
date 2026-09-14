@@ -237,7 +237,11 @@ def check_user_properties(
                     f"{flag} must be a JSON boolean",
                     "Use true or false without quotes",
                 )
-        runtime_fields = {"accountId", "userProperties"}.intersection(user_property)
+        runtime_fields = {
+            field
+            for field in ("accountId", "userProperties")
+            if user_property.get(field) is not None
+        }
         for field in sorted(runtime_fields):
             report.err(
                 "USER_PROPERTY_RUNTIME_DATA",

@@ -132,6 +132,8 @@ For newly generated definitions, include `name`, `showName`, `type`, `value`, `d
 - `chatUpdate`: the conversation may collect or update this property.
 - `chatQuery`: the conversation may read this property.
 
+`chatUpdate=false` blocks LLM-initiated updates; it does not prove that a requested value was saved. Generated prompts must not claim that a user property was saved or updated merely because the model attempted an update or the tool returned at the transport level. Confirm persistence only when the update result lists that property as successful and does not list it as failed; for high-confidence workflows, query the property after writing. When chat updates are disabled, tell the user that the property cannot be changed in chat instead of replying that it was saved. The public User API can still update the value explicitly.
+
 Preserve backend-managed typed-value fields if they already exist in an exported definition, but do not invent them in a new definition.
 
 Never generate or populate `accountId` or nested `userProperties` inside a definition. Current backend exports can retain these keys as `null` placeholders; preserve them when editing an official export, but any non-null value is per-user runtime data and must fail privacy validation.

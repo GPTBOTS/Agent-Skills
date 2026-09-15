@@ -1,6 +1,6 @@
 # Latest `.bot` configuration Skill evaluations
 
-Run each prompt once without the updated Skill as a baseline and once with `gptbots-agent-skill` version `1.4.0`. Evaluate behavior, not exact wording.
+Run each prompt once without the updated Skill as a baseline and once with `gptbots-agent-skill` version `1.4.1`. Evaluate behavior, not exact wording.
 
 ## Service tips
 
@@ -42,4 +42,18 @@ Run each prompt once without the updated Skill as a baseline and once with `gptb
 - Uses a valid lowercase property type and JSON booleans.
 - Checks that the name does not collide with `customVariables[]`.
 - Does not add `accountId`, nested `userProperties`, or any real user's value history.
+- Only claims an update was saved after the result marks that property successful and not failed; uses read-after-write verification when persistence matters.
 - Runs the validator before delivery.
+
+## Read-only user property
+
+**Prompt**
+
+> Add a customer tier user property that the Agent may read but must not update during chat. Make its runtime response honest if a user asks it to save a different tier.
+
+**Expected behavior**
+
+- Sets `chatQuery=true` and `chatUpdate=false`.
+- Adds a prompt rule that the Agent must say the property cannot be changed in chat.
+- Does not claim the value was saved from an attempted call or an HTTP/tool success alone.
+- Points API-driven updates to `/v1/property/update` and verifies persistence through the result collections or `/v2/user-property/query`.

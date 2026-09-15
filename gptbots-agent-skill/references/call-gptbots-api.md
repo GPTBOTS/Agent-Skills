@@ -106,7 +106,7 @@ Returns the entity type (agent/workflow) and id; confirm the key is valid before
 | Name | Method | Path | Description |
 |---|---|---|---|
 | [Set User Id](https://www.gptbots.ai/docs/api-reference/user-api/Set-User-Id) | POST | `/v1/user/set-userid` | Associate a unique user ID with anonymous identifiers across channels. |
-| [Update User Attributes](https://www.gptbots.ai/docs/api-reference/user-api/Update-user-Attributes) | POST | `/v1/property/update` | Batch set custom user attributes for profiling/personalization. |
+| [Update User Attributes](https://www.gptbots.ai/docs/api-reference/user-api/Update-user-Attributes) | POST | `/v1/property/update` | Batch set custom user attributes; inspect both successful and failed items, then query when persistence must be confirmed. |
 | [Query User Attributes](https://www.gptbots.ai/docs/api-reference/user-api/Query-user-Attributes) | GET | `/v2/user-property/query` | Query user attributes by user/anonymous IDs (≤100 per request). |
 | [Get User CDP](https://www.gptbots.ai/docs/api-reference/user-api/get-user-cdp) | GET | `/v1/user/get-user-cdp` | Get user CDP info (user ID, anonymous ID, conversation type). |
 
@@ -156,6 +156,7 @@ Returns the entity type (agent/workflow) and id; confirm the key is valid before
 - The request body structure for Agent and FlowAgent is consistent. For a new conversation, a conversationID should be generated first; for historical conversations, you can directly reuse the original conversationID.
 - Conversations/messages: `POST /v1/conversation` (create conversation), then `POST /v2/conversation/message` with `response_mode` `blocking` or `streaming`.
 - `conversation_config.custom_variables` supplies conversation-property values. Every key must already be defined by the Agent's top-level `.bot` `customVariables[]`; the values persist for that conversation and do not modify the Agent-wide defaults. See `./bot-config-fields.md`.
+- A successful HTTP response from `/v1/property/update` is not by itself proof that every user attribute was stored. Confirm the target attribute appears in the successful collection and not in the failed collection; use `GET /v2/user-property/query` for read-after-write verification when the response will tell the user it was saved.
 - Request Example (blocking):
 ```
 curl -X POST 'https://api-${endpoint}.gptbots.ai/v2/conversation/message' \

@@ -121,7 +121,7 @@ def check_secrets_and_ranges(config: JsonObject, report: Report) -> None:
             "$.apiSecrets",
             "apiSecrets should not be present (it is cleared on import)",
         )
-    check_range(config.get("creativityLevel"), 0.0, 0.95, "$.creativityLevel", report, True)
+    check_range(config.get("creativityLevel"), 0.0, 1.0, "$.creativityLevel", report)
     check_range(config.get("docCorrelation"), 0.0, 1.0, "$.docCorrelation", report)
     check_range(config.get("embeddingRate"), 0.0, 1.0, "$.embeddingRate", report)
 
@@ -144,7 +144,9 @@ def check_range(
     except (TypeError, ValueError):
         report.err("VAL_NUM", path, f"{path} must be a number")
         return
-    out_of_range = normalized < low or (normalized >= high if exclusive_high else normalized > high)
+    out_of_range = normalized < low or (
+        normalized >= high if exclusive_high else normalized > high
+    )
     if out_of_range:
         bound = f"[{low}, {high})" if exclusive_high else f"[{low}, {high}]"
         report.err("VAL_RANGE", path, f"{path}={normalized} is out of range {bound}")

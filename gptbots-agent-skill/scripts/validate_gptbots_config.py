@@ -1048,7 +1048,7 @@ def check_secrets_and_refs(cfg, rep):
     if cfg.get("apiSecrets"):
         rep.warn("SEC_API", "$.apiSecrets", "apiSecrets should not be present (it is cleared on import)")
     # numeric ranges
-    _range(cfg.get("creativityLevel"), 0.0, 0.95, "$.creativityLevel", rep, exclusive_high=True)
+    _range(cfg.get("creativityLevel"), 0.0, 1.0, "$.creativityLevel", rep)
     _range(cfg.get("docCorrelation"), 0.0, 1.0, "$.docCorrelation", rep)
     _range(cfg.get("embeddingRate"), 0.0, 1.0, "$.embeddingRate", rep)
 

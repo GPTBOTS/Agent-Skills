@@ -6,7 +6,10 @@ from pathlib import Path
 from typing import TypedDict
 
 VALIDATOR = (
-    Path(__file__).parents[1] / "gptbots-agent-skill" / "scripts" / "validate_gptbots_config.py"
+    Path(__file__).parents[1]
+    / "gptbots-agent-skill"
+    / "scripts"
+    / "validate_gptbots_config.py"
 )
 
 JsonValue = str | int | float | bool | None | list["JsonValue"] | dict[str, "JsonValue"]
@@ -90,6 +93,38 @@ def test_preserves_top_level_enum_validation(tmp_path: Path) -> None:
 
     assert exit_code == 1
     assert codes == {"ENUM_REASONING_EFFORT", "HUMAN_MANUFACTURER_INVALID"}
+
+
+def test_accepts_platform_exported_creativity_level_one(tmp_path: Path) -> None:
+    config: JsonObject = {
+        "formatVersion": "1.0",
+        "exportType": "BOT",
+        "name": "Creativity boundary",
+        "botType": "QuestionAnswer",
+        "multiModal": {"multiModalInput": {"fileLimit": 1}},
+        "creativityLevel": 1.0,
+    }
+
+    exit_code, result = _run_validator(tmp_path, config)
+
+    assert exit_code == 0
+    assert "VAL_RANGE" not in {problem["code"] for problem in result["errors"]}
+
+
+def test_rejects_creativity_level_above_one(tmp_path: Path) -> None:
+    config: JsonObject = {
+        "formatVersion": "1.0",
+        "exportType": "BOT",
+        "name": "Creativity out of range",
+        "botType": "QuestionAnswer",
+        "multiModal": {"multiModalInput": {"fileLimit": 1}},
+        "creativityLevel": 1.01,
+    }
+
+    exit_code, result = _run_validator(tmp_path, config)
+
+    assert exit_code == 1
+    assert "VAL_RANGE" in {problem["code"] for problem in result["errors"]}
 
 
 def test_preserves_flow_handle_validation(tmp_path: Path) -> None:

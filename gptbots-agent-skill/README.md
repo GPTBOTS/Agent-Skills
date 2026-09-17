@@ -18,7 +18,7 @@ authoring-skills/
 │   ├── create-gptbots-workflow.md        # Workflow → .flow
 │   ├── call-gptbots-api.md               # drive Agents via the public API (Bearer key playbooks)
 │   ├── org-devkey-api.md                 # account DevKey APIs: orgs, model version IDs, Tool/MCP/Skill, create Agent/Workflow
-│   ├── version-manage-api.md             # update / publish / roll back an existing target's version
+│   ├── version-manage-api.md             # update / publish / roll back an existing target's version; LoopAgent private Skills
 │   ├── organize-knowledge-base.md        # curate raw docs → import-ready Markdown / table / Q&A
 │   ├── flowagent-components.md           # FlowAgent component spec
 │   ├── workflow-nodes.md                 # Workflow 21-node spec
@@ -31,7 +31,8 @@ authoring-skills/
     ├── build_gptbots_loopagent.py        # builder: LoopAgent .bot (center + 7 satellites)
     ├── build_gptbots_audioagent.py       # builder: Audio Agent .bot (voice engine block)
     ├── build_gptbots_workflow.py         # builder: Workflow .flow
-    ├── gptbots_org_api.py                # account DevKey client (orgs, models, tools, MCPs, skills, create Agent/Workflow)
+    ├── gptbots_org_api.py                # account DevKey client (orgs, models, tools, MCPs, org Skills create/update, create Agent/Workflow)
+    ├── gptbots_agent_skill.py            # Agent-key client: create / update a LoopAgent's private Skill from a package
     ├── publish_gptbots.py                # version import / release / list / rollback for an existing target
     ├── create_knowledge_base.py          # create a knowledge base via API
     ├── gptbots_prompts.py                # load node prompts from prompts/ | prompts.md | .json

@@ -15,7 +15,7 @@ failure when driving GPTBots from a script.
 |---|---|---|
 | Header | `Authorization: Basic base64(DevKey:DevSecret)` | `Authorization: Bearer <API Key>` |
 | Scope | the **account**, then an org via `org_id` | **one** Agent or Workflow |
-| Gets you | orgs, model version IDs, Tool/MCP/Skill CRUD, **creating** Agents & Workflows from a file | chat, workflow runs, knowledge/database/analytics, and that target's **version import / release / rollback** |
+| Gets you | orgs, model version IDs, Tool/MCP CRUD, **org-level** Skill create/update/list/delete, **creating** Agents & Workflows from a file | chat, workflow runs, knowledge/database/analytics, that target's **version import / release / rollback**, and a LoopAgent's **private Skills** (`/v1/agent/skill/{create,update}`) |
 | Where from | https://www.gptbots.ai/developer/profile — Profile → Account → Developer info (**DevKey** + **API DevSecret**) | that target's Integration → API channel → create API Key |
 | Reference | this file | `call-gptbots-api.md`, `version-manage-api.md` |
 
@@ -48,9 +48,10 @@ All paths relative to the regional host. Every one takes the Basic header.
 | Create MCP | POST | `/v1/org/mcp/create` | pulls the server's tools on create |
 | Refresh MCP tools | POST | `/v1/org/mcp/refresh` | re-pull `actions` |
 | Delete MCP | POST | `/v1/org/mcp/delete` | `id` |
-| Create Skill | POST | `/v1/org/skill/create` | empty shell, org-level or Agent-private |
-| Import Skill package (file) | POST | `/v1/org/skill/import` | multipart, `.zip` / `.skill` |
+| Create Skill (package) | POST | `/v1/org/skill/create` | multipart `org_id` + `file` (`.zip` / `.skill`) → org-level Skill |
+| Import Skill package (file) | POST | `/v1/org/skill/import` | multipart, `.zip` / `.skill`, optional `category_id` — create only |
 | Import Skill package (URL) | POST | `/v1/org/skill/import/url` | host must be on the server allow-list |
+| **Update Skill (package)** | POST | `/v1/org/skill/update` | multipart `skill_id` + `org_id` + `file`; **auto-published**; org-level only |
 | List Skills | GET | `/v1/org/skill/list` | filter by owner/category/enable |
 | Delete Skill | POST | `/v1/org/skill/delete` | cascades drafts + version snapshots |
 | Precheck Agent file | POST | `/v1/org/agent/import/precheck` | parse + security scan only, writes nothing |
@@ -169,17 +170,36 @@ remote server's tools change later, `POST /v1/org/mcp/refresh` re-pulls them. `a
 false` with `action_count: 0` means the handshake failed — check `url` and transport type
 before blaming the config.
 
-**Skill** — three ways in:
-- `POST /v1/org/skill/create` makes an **empty** skill: `name` (≤50), `description` as a
-  multilingual object that **must contain `en_US`**, optional `display_name`, and
-  `owner_agent_id` — pass it to create a *private* skill on one Agent, omit it for an
-  org-level skill.
-- `POST /v1/org/skill/import` uploads a `.zip` / `.skill` package (multipart, optional
-  `category_id`) — the path for a skill package this session produced.
-- `POST /v1/org/skill/import/url` pulls the package from a public URL. The host must be on
-  the server's `openapi.skill-package.allowed-hosts` allow-list; an arbitrary URL is
-  rejected, so prefer the file upload unless the user already hosts packages somewhere
-  approved.
+**Skill (org-level)** — every write is a **package upload**; there is no "empty shell" form
+any more, and none of these endpoints touches an Agent-private Skill.
+
+*The package* (same rules for every endpoint below and for the Agent-private ones): a
+`.skill` or `.zip`, **≤ 20 MiB**, with `SKILL.md` at the archive root or inside the single
+top-level folder, and a YAML frontmatter that carries `name`. The helper script checks all of
+that offline before uploading. Build the package from a skill folder with
+`cd <parent> && zip -r <name>.skill <folder>` (a `.skill` is just a zip).
+
+- **Create** — `POST /v1/org/skill/create`, multipart `org_id` + `file`. Returns
+  `{skill_id, name, owner_type: "ORGANIZATION"}`; `name` comes from the frontmatter. **Keep
+  `skill_id`** — it is the handle for every later update. (`POST /v1/org/skill/import`,
+  multipart `file` + `org_id` + optional `category_id`, does the same job with a category;
+  `POST /v1/org/skill/import/url` pulls the package from a public URL whose host is on the
+  server's `openapi.skill-package.allowed-hosts` allow-list — prefer the file upload unless
+  the user already hosts packages somewhere approved. Both are **create-only**: re-importing
+  makes a second Skill, never an update.)
+- **Update** — `POST /v1/org/skill/update`, multipart `skill_id` + `org_id` + `file`
+  (+ optional `category_id`; omitted = keep). The new package **goes live immediately** —
+  there is no draft/release step for an org Skill, so tell the user before pushing to a
+  Skill that production Agents already mount. Accepts only `owner_type=ORGANIZATION` Skills
+  not bound to an Agent; Agent-private, legacy `bot_id` records and SYSTEM Skills are
+  refused → use the Agent-key endpoints in `version-manage-api.md` §7 for private ones.
+- **Agent-private Skill?** Not here. A LoopAgent's private Skill is created/updated with
+  *that Agent's own API Key* (`/v1/agent/skill/{create,update}`, Bearer, needs
+  version-management permission) — `scripts/gptbots_agent_skill.py`, documented in
+  `version-manage-api.md` §7. `GET /v1/org/skill/list?owner_agent_id=…` (DevKey) still lists
+  them.
+- Doc-page quirk: the create page's header table says `Content-Type: application/json`,
+  but the request is a form upload; send `multipart/form-data` like the example does.
 
 Deletes (`/v1/org/tool/delete`, `/v1/org/mcp/delete` — both keyed `id`; `/v1/org/skill/delete`
 — keyed `skill_id`) are **irreversible**: skill deletion cascades to drafts, version
@@ -198,6 +218,9 @@ export GPTBOTS_DEV_KEY=…  GPTBOTS_DEV_SECRET=…      # ask the user; never pe
 python3 scripts/gptbots_org_api.py orgs                              # → org_id list
 python3 scripts/gptbots_org_api.py models --org p-xxxx --agent-type LOOP_AGENT
 python3 scripts/gptbots_org_api.py models --org p-xxxx --agent-type AGENT --capability CHAT --grep claude
+python3 scripts/gptbots_org_api.py create-skill refund-policy.skill --org p-xxxx          # → skill_id
+python3 scripts/gptbots_org_api.py update-skill refund-policy-v2.skill --org p-xxxx --skill-id skill-xxxx   # live at once
+python3 scripts/gptbots_org_api.py skills --org p-xxxx --grep refund
 python3 scripts/gptbots_org_api.py precheck-agent my-agent.bot --org p-xxxx
 python3 scripts/gptbots_org_api.py import-agent  my-agent.bot --org p-xxxx --name "Support Bot"
 python3 scripts/gptbots_org_api.py import-workflow my.flow --org p-xxxx

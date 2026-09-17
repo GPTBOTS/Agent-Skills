@@ -2,8 +2,9 @@
 
 > After generating and validating a `.bot`/`.flow`, you can push it into an **existing**
 > GPTBots target, take it live, and roll it back — all through that target's own API Key,
-> no console import. Creating a *new* Agent/Workflow from a file is a different endpoint
-> family (account-level DevKey) — see `org-devkey-api.md`.
+> no console import. The same key also creates and updates a LoopAgent's **private Skills**
+> (§7). Creating a *new* Agent/Workflow from a file, or an *org-level* Skill, is a different
+> endpoint family (account-level DevKey) — see `org-devkey-api.md`.
 
 ## 1. The gate: an API Key with version-management permission
 
@@ -106,6 +107,11 @@ the console.
 
 ## 5. Import-time data handling (what is and isn't preserved)
 
+- **Prompts are versioned only here.** A LoopAgent's persona (and every other identity
+  prompt) has no history of its own: the console's prompt editor shows the Agent's version list
+  for diffing and cannot restore. `import` is therefore what records a prompt revision, and
+  `rollback` is how an earlier prompt comes back — as part of the whole config snapshot.
+
 - Knowledge bases (data groups) / database tables / docs: kept if they still belong to the
   target (by Agent/Workflow ID), else dropped.
 - Associated workflows / tools (plugins): kept if still valid in the **organization**, else
@@ -138,3 +144,49 @@ the console.
 6. Release only on their explicit go-ahead.
 7. If it misbehaves in production: `--rollback <last good version> --release`, which lands
    as a new version rather than erasing history.
+
+## 7. Agent-private Skills on a LoopAgent (`/v1/agent/skill/*`)
+
+A LoopAgent can own **private** Skills — visible to that one Agent, mounted through the
+`ClawSkill` satellite's `skillRefs[]` (see `create-gptbots-loopagent.md` §6). Two Agent-key
+endpoints create and update them from a package, so a Skill this session wrote can be put on
+the Agent without embedding it in `privateSkills[]` (which duplicates on every re-import).
+
+| Action | Method | Path | Form fields | Returns |
+|---|---|---|---|---|
+| Create a private Skill | POST | `/v1/agent/skill/create` | `file` (`.skill`/`.zip`), `category_id`? | `{skill_id, name, version}` |
+| Update a private Skill | POST | `/v1/agent/skill/update` | `skill_id`, `file`, `category_id`? (omit = keep) | `{skill_id, name, version}` |
+
+Same gate as the rest of this file: the **LoopAgent's own API Key with version-management
+permission** (`Authorization: Bearer …`). What the docs pin down:
+
+- **LoopAgent only.** A plain Agent, FlowAgent or Workflow key gets refused; so does a
+  `skill_id` that belongs to a different Agent (lookup is `skill_id + project + bot`).
+- **Package rules:** `.skill`/`.zip` ≤ 20 MiB; ≤ 200 files; ≤ 5 MiB per file and ≤ 64 MiB
+  in total unpacked; `SKILL.md` at the root or inside the single top-level folder, with
+  `name` in its frontmatter. `scripts/gptbots_agent_skill.py` checks all of this offline
+  before uploading.
+- **Nothing is mounted, saved or published.** Create stores the Skill; update stores a new
+  content version (`version` bumps, `skill_id` stays). Neither call edits `skillRefs`, saves
+  an Agent draft or releases anything. To use a newly created Skill: put
+  `{"skillId": "<skill_id>", "enabled": true, "source": "ORGANIZATION"}` into the
+  `ClawSkill` satellite's `skillRefs[]` (the platform records private Skills with that
+  `source`; keep `privateSkills: []`), import the `.bot` as a new version
+  (`publish_gptbots.py`) and release on the user's go-ahead. A Skill that is *already*
+  mounted picks up an `update` at its next run — the ref is by id, the content is versioned
+  separately — so no new Agent version is needed for a content-only change.
+- **Update is idempotent.** An identical package returns the current version without
+  writing anything; no idempotency header is needed, so retries are safe.
+- **Org-level Skills are not reachable here.** Those are DevKey-auth
+  (`/v1/org/skill/{create,update}`, `org-devkey-api.md` §5) and an org Skill update goes live
+  instantly for every Agent that mounts it.
+
+```bash
+export GPTBOTS_API_KEY=…    # the LoopAgent's key with version management; never persist
+python3 scripts/gptbots_agent_skill.py create refund-policy.skill                 # → skill_id, version 1.0.0
+python3 scripts/gptbots_agent_skill.py update refund-policy-v2.skill --skill-id skill-xxxx
+```
+
+Error table additions: `40127` "Developer authentication failed" = wrong/missing Bearer key;
+`403` = key lacks version-management permission or is not a LoopAgent's; `400` = package
+rejected (run the offline check for the reason).

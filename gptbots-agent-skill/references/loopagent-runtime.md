@@ -45,7 +45,19 @@ Two hidden behaviours: an empty `end_turn` from the gateway is retried once auto
 | **organization / platform** skill body | **no** — saving is instantly global |
 | knowledge-base document content, key-event data, user-property values | **no** — runtime data, instantly global |
 
-Also: the persona editor's **draft** (autosaved while typing) is visible to nobody but the editing member — not even debug chat. "I changed it and nothing happened" is usually an unsaved draft, then an unpublished save. Restoring a version only reloads it **into the draft**; it must still be saved.
+**The persona has no version history of its own.** The identity-prompt editor has no save
+button and no editor-owned draft: closing it writes `persona` into the live `clawRule`, and the
+Agent's ordinary auto-save persists it (→ Debug at once, production only after publish). Its
+"history" panel is the **Agent's version list** (`c_bot_version`, `PRE_PUBLISH` / `PUBLISHED`),
+each entry a full config snapshot from which the persona is read for a **diff — browse and
+compare only, no restore**. Consequences for anyone driving this by API or explaining it:
+- to get an old persona back, roll back the **Agent version** (`/v1/agent/version/rollback`,
+  §5 of `version-manage-api.md`) or take it from an exported `.bot` — there is nothing
+  narrower to restore;
+- a persona edit that nobody saved as a version leaves no trace; saving a version
+  (`/v1/agent/version/import`, console "save version") is what makes it comparable later;
+Same rule for the plain Agent / Audio / FlowAgent-LLM / Workflow-LLM prompt editors: their
+history is the target's version list too.
 
 ## 4. Why a tool "doesn't exist" — gating checklists
 
@@ -105,6 +117,7 @@ The Open-API version endpoints (`/v1/agent/version/import|release|rollback|list`
 | symptom | check |
 |---|---|
 | config / persona / knowledge change not visible to customers | §3 — saving only updates Debug; publish |
+| "restore the previous persona" | §3 — no persona-level history; roll back the Agent version or reuse an export |
 | production channel errors immediately | never published (§3) |
 | no reply / error on the first frame, `50101` | AMH gateway or model id (§7) |
 | can't add plugin / workflow / table / handoff, buttons greyed out | the selected brain model has no tool-calling capability |

@@ -7,10 +7,12 @@ This file covers the **Agent / Workflow API Key** (`Authorization: Bearer <key>`
 workflow runs, knowledge, database, analytics, diagnostics. Two neighbouring families use a
 *different* credential or permission:
 
-- **Creating** Agents/Workflows/Tools/MCPs/Skills, listing orgs, and looking up **model
-  version IDs** → account-level **DevKey/DevSecret** Basic auth → `org-devkey-api.md`.
-- **Updating / publishing / rolling back** an existing target's version → the target's API
-  Key **with version-management permission** (a console-only grant) → `version-manage-api.md`.
+- **Creating** Agents/Workflows/Tools/MCPs, org-level Skills (create/update/delete), listing
+  orgs, and looking up **model version IDs** → account-level **DevKey/DevSecret** Basic auth
+  → `org-devkey-api.md`.
+- **Updating / publishing / rolling back** an existing target's version, and a LoopAgent's
+  **private Skills** (`/v1/agent/skill/{create,update}`) → the target's API Key **with
+  version-management permission** (a console-only grant) → `version-manage-api.md`.
 
 ## Authentication and base URL
 - Base URL follows the data-center region: `https://api-${endpoint}.gptbots.ai/`
@@ -50,6 +52,8 @@ Returns the entity type (agent/workflow) and id; confirm the key is valid before
 | [Import Agent Version](https://www.gptbots.ai/docs/api-reference/conversation-api/import-agent-version) | POST | `/v1/agent/version/import` | Replace the config from a `.bot` and save a new version. |
 | [Release Agent Version](https://www.gptbots.ai/docs/api-reference/conversation-api/release-agent-version) | POST | `/v1/agent/version/release` | Publish a version live. |
 | [Rollback Agent Version](https://www.gptbots.ai/docs/api-reference/conversation-api/rollback-agent-version) | POST | `/v1/agent/version/rollback` | Copy an earlier version into a new one, optionally publishing it. |
+| [Create Agent Skill](https://www.gptbots.ai/docs/api-reference/conversation-api/create-agent-skill) | POST | `/v1/agent/skill/create` | **LoopAgent only.** Multipart `.skill`/`.zip` (+ optional `category_id`) → a **private** Skill of the key's Agent; returns `{skill_id, name, version}`. Does not mount it or save/publish an Agent version. Needs version-management permission — `version-manage-api.md` §7. |
+| [Update Agent Skill](https://www.gptbots.ai/docs/api-reference/conversation-api/update-agent-skill) | POST | `/v1/agent/skill/update` | **LoopAgent only.** Multipart `skill_id` + `file` (+ `category_id`) → new Skill content version; identical package = no-op. Same permission. |
 
 ### Knowledge API
 | Name | Method | Path | Description |
@@ -127,9 +131,10 @@ Returns the entity type (agent/workflow) and id; confirm the key is valid before
 | [Create MCP](https://www.gptbots.ai/docs/api-reference/account-api/create-mcp) | POST | `/v1/org/mcp/create` | Create an MCP (`SSE`/`STREAMABLE_HTTP`) and pull its tools. |
 | [Refresh MCP Tools](https://www.gptbots.ai/docs/api-reference/account-api/refresh-mcp-tools) | POST | `/v1/org/mcp/refresh` | Re-pull an MCP server's tools into actions. |
 | [Delete MCP](https://www.gptbots.ai/docs/api-reference/account-api/delete-mcp) | POST | `/v1/org/mcp/delete` | Delete an MCP. |
-| [Create Skill](https://www.gptbots.ai/docs/api-reference/account-api/create-skill) | POST | `/v1/org/skill/create` | Create an org-level or Agent-private Skill (`description` must include `en_US`). |
-| [Import Skill Package](https://www.gptbots.ai/docs/api-reference/account-api/import-skill-package) | POST | `/v1/org/skill/import` | Upload a `.zip`/`.skill` package as an org Skill. |
+| [Create Skill](https://www.gptbots.ai/docs/api-reference/account-api/create-skill) | POST | `/v1/org/skill/create` | Multipart `org_id` + `file` (`.zip`/`.skill`, ≤20 MiB, `SKILL.md` with `name`) → org-level Skill; returns `skill_id`. |
+| [Import Skill Package](https://www.gptbots.ai/docs/api-reference/account-api/import-skill-package) | POST | `/v1/org/skill/import` | Upload a `.zip`/`.skill` package as an org Skill (+ `category_id`). Create only. |
 | [Import Skill Package by URL](https://www.gptbots.ai/docs/api-reference/account-api/import-skill-package-url) | POST | `/v1/org/skill/import/url` | Same, from an allow-listed public URL. |
+| [Update Skill](https://www.gptbots.ai/docs/api-reference/account-api/update-skill-package) | POST | `/v1/org/skill/update` | Multipart `skill_id` + `org_id` + `file` (+ `category_id`) → replaces an **org-level** Skill's package, **published immediately**. Refuses Agent-private / SYSTEM Skills. |
 | [List Skills](https://www.gptbots.ai/docs/api-reference/account-api/list-skills) | GET | `/v1/org/skill/list` | Org Skills, filterable by owner/category/enable. |
 | [Delete Skill](https://www.gptbots.ai/docs/api-reference/account-api/delete-skill) | POST | `/v1/org/skill/delete` | Delete a Skill (cascades drafts + version snapshots). |
 | [Precheck Agent Import](https://www.gptbots.ai/docs/api-reference/account-api/precheck-agent-import) | POST | `/v1/org/agent/import/precheck` | Parse + security-scan a `.bot`; writes nothing. |

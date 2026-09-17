@@ -1,5 +1,62 @@
 # Changelog
 
+## 2026-09-14 (2.1.0)
+
+Platform API update: Skills are now managed as **packages** end to end, for both org-level
+and Agent-private Skills. Sources: `API Reference/Account API/Skills/{API create org Skill,
+file import, URL import, update org Skill}` and `API Reference/Agent API/{create, update}
+Agent Skill` in the docs repo (updated 2026-09-14).
+
+### Breaking / migration
+
+- **`POST /v1/org/skill/create` changed shape.** It is now a multipart upload (`org_id` +
+  `file`, a `.skill`/`.zip`) that creates an org-level Skill from the package. The former
+  JSON "empty shell" body (`name`, `description{en_US}`, `display_name`, `owner_agent_id`)
+  is gone, and with it the DevKey route to an Agent-private Skill.
+  `gptbots_org_api.py create-skill` follows: it now takes a package path
+  (`create-skill <pkg> --org …`) and no longer accepts `--name/--desc-en/--owner-agent`.
+- **Agent-private Skills moved to the Agent API.** They are created/updated with the
+  LoopAgent's *own* API Key (`Authorization: Bearer`, version-management permission) —
+  `POST /v1/agent/skill/{create,update}` — not with DevKey auth.
+
+### Added
+
+- **`POST /v1/org/skill/update` (DevKey)** — replace an org-level Skill's package by
+  `skill_id` (+ `org_id`, optional `category_id`). The new package is **published
+  immediately**; only `owner_type=ORGANIZATION` Skills not bound to an Agent are accepted
+  (Agent-private, legacy `bot_id` and SYSTEM Skills are refused). `import` / `import/url`
+  are documented as create-only. `gptbots_org_api.py update-skill <pkg> --skill-id …`.
+- **`POST /v1/agent/skill/create` and `/update` (Agent Key, LoopAgent only)** — create a
+  private Skill from a package (`file`, optional `category_id`) → `{skill_id, name,
+  version}`; update by `skill_id` + `file` → new content version (identical package =
+  no-op, no idempotency header needed). Neither call mounts the Skill, saves an Agent
+  draft or releases a version — mounting is a `skillRefs[]` entry plus a version import.
+  New `scripts/gptbots_agent_skill.py create|update`, and a new §7 in
+  `references/version-manage-api.md`.
+- **Offline package check** shared by both scripts (`check_skill_package` /
+  `check_package`): `.skill`/`.zip`, ≤ 20 MiB, `SKILL.md` at the root or in the single
+  top-level folder, frontmatter `name`; the Agent-side check also enforces ≤ 200 files,
+  ≤ 5 MiB per file and ≤ 64 MiB unpacked. A bad package fails with exit 2 before any upload.
+
+### Changed
+
+- **Persona has no separate version history any more** (verified against
+  `oversea-ailab-frontend` `IdentityPromptEditorPage.vue` / `PromptEditorHost.vue` and the
+  backend `BotVersionService`): the identity-prompt editor has no save button or draft,
+  writes into the live `clawRule`, and its history panel is the Agent's `c_bot_version`
+  list — diff only, no restore. `loopagent-runtime.md` §3 (which still described a
+  persona draft and "restore a version into the draft") is rewritten; §8 gains a
+  "restore the previous persona" row; `version-manage-api.md` §5 and
+  `create-gptbots-loopagent.md` note that Agent version import/rollback is the only prompt
+  revision trail.
+- `references/org-devkey-api.md` §2/§5/§6, `references/call-gptbots-api.md` (Account and
+  Agent API tables, credential guide) and `create-gptbots-loopagent.md` §6 rewritten for the
+  package model; the LoopAgent reference now recommends the API over `privateSkills[]` for
+  giving an existing Agent a private Skill (stable `skill_id`, no duplicate copies on
+  re-import).
+- `SKILL.md` workflow E and the description mention org-level vs Agent-private Skill
+  create/update and which credential each takes.
+
 ## 2026-08-26 (2.0.0)
 
 Platform API update: the account-level (DevKey) resource APIs, Agent/Workflow version

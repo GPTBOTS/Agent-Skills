@@ -1,9 +1,9 @@
 ---
 name: gptbots-agent-skill
-description: Create, read, update, and optimize GPTBots (https://www.gptbots.ai) Agent, FlowAgent, LoopAgent, Audio (voice) Agent, and Workflow configs (.bot / .flow), create Agents/Workflows/Tools/MCPs/Skills on the platform and look up model version IDs with account-level DevKey APIs, import & publish/roll back versions of an existing target via its API Key, drive published Agents/Workflows via the Open API (evaluation, RAG testing, scheduled triggering, data & knowledge-base management), diagnose live conversations via message-level LogTree traces, create knowledge bases, and curate raw documents (PDF, Word, Excel, web, FAQ) into import-ready knowledge files. Use whenever the user mentions GPTBots or a .bot/.flow file, or wants to build/optimize/publish/roll back/evaluate a GPTBots Agent, FlowAgent, LoopAgent, Audio/voice Agent, or Workflow, create a Tool/MCP/Skill or query platform model IDs, run ops diagnostics on a conversation, create or manage a knowledge base, or organize knowledge-base documents.
+description: Create, read, update, and optimize GPTBots (https://www.gptbots.ai) Agent, FlowAgent, LoopAgent, Audio (voice) Agent, and Workflow configs (.bot / .flow), create Agents/Workflows/Tools/MCPs/Skills on the platform and look up model version IDs with account-level DevKey APIs, create/update org-level Skills and a LoopAgent's private Skills from a .skill/.zip package, import & publish/roll back versions of an existing target via its API Key, drive published Agents/Workflows via the Open API (evaluation, RAG testing, scheduled triggering, data & knowledge-base management), diagnose live conversations via message-level LogTree traces, create knowledge bases, and curate raw documents (PDF, Word, Excel, web, FAQ) into import-ready knowledge files. Use whenever the user mentions GPTBots or a .bot/.flow file, or wants to build/optimize/publish/roll back/evaluate a GPTBots Agent, FlowAgent, LoopAgent, Audio/voice Agent, or Workflow, create or update a Tool/MCP/Skill (org-level or Agent-private) or query platform model IDs, run ops diagnostics on a conversation, create or manage a knowledge base, or organize knowledge-base documents.
 license: MIT
 metadata:
-  version: 2.0.0
+  version: 2.1.0
   generatedBy: gptbots-agent-skill
 ---
 
@@ -24,8 +24,8 @@ A platform-level skill for working with **GPTBots** (https://www.gptbots.ai) Age
 Use this skill to:
 - **Read / update / optimize** an Agent or Workflow config from a **user-provided `.bot` or `.flow` file**.
 - **Create a new** Agent or Workflow from scratch (scenario + requirements → importable `.bot` / `.flow`).
-- **Create** a new Agent / Workflow / Tool / MCP / Skill on the platform, and **look up model version IDs**, with the account-level **DevKey/DevSecret** APIs — see `references/org-devkey-api.md`.
-- **Update, publish and roll back** an existing Agent/Workflow's version via its own API Key (needs **version-management permission**, granted in the console) — see `references/version-manage-api.md`.
+- **Create** a new Agent / Workflow / Tool / MCP / Skill on the platform, and **look up model version IDs**, with the account-level **DevKey/DevSecret** APIs — see `references/org-devkey-api.md`. Org-level Skills are created **and updated** from a `.skill`/`.zip` package (`/v1/org/skill/{create,update}`; an update goes live at once).
+- **Update, publish and roll back** an existing Agent/Workflow's version, and **create / update a LoopAgent's private Skills** (`/v1/agent/skill/{create,update}`), via that target's own API Key (needs **version-management permission**, granted in the console) — see `references/version-manage-api.md`.
 - **Drive** a published Agent/Workflow via the public Open API for evaluation, quality assessment, RAG testing, scheduled triggering, and data/knowledge-base management.
 - **Organize** raw documents into import-ready knowledge-base files (Document / Table / Q&A) and advise on chunking, metadata, and retrieval tuning.
 
@@ -42,7 +42,7 @@ references/                   # how-to specs (read the one matching the task)
   create-gptbots-workflow.md      # Workflow → .flow
   call-gptbots-api.md             # drive an Agent/Workflow via the public API (Bearer API Key)
   org-devkey-api.md               # account DevKey APIs: orgs, model version IDs, Tool/MCP/Skill, create Agent/Workflow
-  version-manage-api.md           # update / publish / roll back an existing target's version
+  version-manage-api.md           # update / publish / roll back an existing target's version; LoopAgent private Skills (§7)
   organize-knowledge-base.md      # curate raw docs → import-ready Markdown / table / Q&A files
   variables-reference.md / materials-mapping.md / workflow-nodes.md / flowagent-components.md
 scripts/
@@ -55,7 +55,8 @@ scripts/
   build_gptbots_workflow.py     # builder: Workflow .flow
   gptbots_prompts.py            # load_prompts() — node prompts from prompts.md, a prompts/ folder, or .json
   publish_gptbots.py            # validate → import → (optional) release / list versions / roll back an existing target
-  gptbots_org_api.py            # account DevKey client: orgs, models, tools, MCPs, skills, create Agent/Workflow
+  gptbots_org_api.py            # account DevKey client: orgs, models, tools, MCPs, org Skills (create/update/list/delete), create Agent/Workflow
+  gptbots_agent_skill.py        # Agent-key client: create / update a LoopAgent's PRIVATE Skill from a .skill/.zip package
   create_knowledge_base.py      # create a knowledge base via API → prints knowledge_base_id
 ```
 
@@ -105,13 +106,19 @@ When the user wants a **new knowledge base**, create it via the API with `script
 
 ### E. Create platform resources / publish through the API
 Two credentials, two jobs — mixing them up is the usual failure:
-- **Creating** something new (an Agent or Workflow from a `.bot`/`.flow`, a Tool, an MCP, a Skill)
-  or listing orgs/models → account **DevKey + DevSecret**, Basic auth, `scripts/gptbots_org_api.py`
-  (`references/org-devkey-api.md`). Always `precheck-agent`/`precheck-workflow` before importing;
-  the returned `api_key` is shown **once**, so hand it to the user immediately.
+- **Creating** something new (an Agent or Workflow from a `.bot`/`.flow`, a Tool, an MCP, an
+  **org-level** Skill) or listing orgs/models → account **DevKey + DevSecret**, Basic auth,
+  `scripts/gptbots_org_api.py` (`references/org-devkey-api.md`). Always
+  `precheck-agent`/`precheck-workflow` before importing; the returned `api_key` is shown
+  **once**, so hand it to the user immediately. Org Skills are package uploads
+  (`create-skill <pkg>` → keep the `skill_id`; `update-skill <pkg> --skill-id …` replaces the
+  package and is **live immediately** — say so before touching a Skill that production Agents mount).
 - **Updating / publishing / rolling back** an existing target → that target's own **API Key with
   version-management permission**, `scripts/publish_gptbots.py`
-  (`references/version-manage-api.md`). That permission is a console-only grant on
+  (`references/version-manage-api.md`). The same key creates/updates a **LoopAgent's private
+  Skills** from a package: `scripts/gptbots_agent_skill.py create|update` — this stores the
+  Skill only; mounting is a `skillRefs[]` entry in the `.bot` plus a version import, and
+  nothing is released until the user says so (§7 there). That permission is a console-only grant on
   **www.gptbots.ai** (target → Integration/API → create an API Key with **version management** enabled); the key
   the import API auto-creates does **not** have it, and neither does an ordinary chat key — both
   answer HTTP 403. Tell the user this explicitly rather than letting them hit the 403.

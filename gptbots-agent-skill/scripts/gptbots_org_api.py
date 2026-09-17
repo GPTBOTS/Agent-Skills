@@ -24,9 +24,10 @@ Commands:
   create-mcp                             POST /v1/org/mcp/create
   refresh-mcp                            POST /v1/org/mcp/refresh
   delete-mcp                             POST /v1/org/mcp/delete
-  create-skill                           POST /v1/org/skill/create
-  import-skill <pkg>                     POST /v1/org/skill/import      (.zip/.skill)
+  create-skill <pkg>                     POST /v1/org/skill/create      (.zip/.skill -> org Skill)
+  import-skill <pkg>                     POST /v1/org/skill/import      (.zip/.skill -> org Skill)
   import-skill-url <url>                 POST /v1/org/skill/import/url
+  update-skill <pkg> --skill-id ID       POST /v1/org/skill/update      (new package -> auto-published)
   delete-skill                           POST /v1/org/skill/delete
   precheck-agent <file.bot>              POST /v1/org/agent/import/precheck
   import-agent <file.bot>                POST /v1/org/agent/import      (creates an Agent)
@@ -44,6 +45,13 @@ Examples:
   python3 gptbots_org_api.py import-agent  my.bot --org p-xxxx --name "Support Bot"
   python3 gptbots_org_api.py create-tool --org p-xxxx --name weather --desc "Weather" \
           --logo https://cdn/x.png --url https://api.example.com --schema-file openapi.json
+  python3 gptbots_org_api.py create-skill refund-policy.skill --org p-xxxx
+  python3 gptbots_org_api.py update-skill refund-policy-v2.skill --org p-xxxx --skill-id skill-xxxx
+
+Skill packages: .skill or .zip, <= 20 MiB, SKILL.md at the root or inside the single
+top-level folder, frontmatter must carry `name`. Org-level Skills only -- an Agent-PRIVATE
+Skill (LoopAgent) is created/updated with that Agent's own API Key via
+gptbots_agent_skill.py (/v1/agent/skill/{create,update}).
 
 Exit codes: 0 ok; 2 precheck/validation failed; 3 API error; 4 usage error.
 """
@@ -344,26 +352,98 @@ def cmd_refresh_mcp(a, auth):
     return 0
 
 
+SKILL_PKG_MAX_BYTES = 20 * 1024 * 1024
+
+
+def check_skill_package(path):
+    """Offline mirror of the server-side package rules; returns a list of problems.
+
+    .skill / .zip, <= 20 MiB, and a SKILL.md at the archive root or inside the single
+    top-level folder whose YAML frontmatter has a `name`. Catching this locally saves a
+    400 round-trip and gives a readable reason.
+    """
+    import re
+    import zipfile
+    pth = Path(path)
+    problems = []
+    if pth.suffix.lower() not in (".skill", ".zip"):
+        problems.append("extension must be .skill or .zip (got %r)" % pth.suffix)
+    if pth.stat().st_size > SKILL_PKG_MAX_BYTES:
+        problems.append("package is %.1f MiB; the limit is 20 MiB" % (pth.stat().st_size / 2**20))
+    if not zipfile.is_zipfile(pth):
+        problems.append("not a zip archive (a .skill is a zip with SKILL.md inside)")
+        return problems
+    with zipfile.ZipFile(pth) as z:
+        names = [n for n in z.namelist() if not n.endswith("/")]
+        tops = {n.split("/", 1)[0] for n in names}
+        candidates = ["SKILL.md"]
+        if len(tops) == 1:
+            candidates.append("%s/SKILL.md" % next(iter(tops)))
+        hit = next((c for c in candidates if c in names), None)
+        if not hit:
+            problems.append("no SKILL.md at the root or inside a single top-level folder "
+                            "(top-level entries: %s)" % ", ".join(sorted(tops)) or "-")
+            return problems
+        text = z.read(hit).decode("utf-8", "replace")
+        text = text.lstrip("\ufeff")
+        fm = re.match(r"^---\s*\n(.*?)\n---", text, re.S)
+        if not fm:
+            problems.append("%s has no YAML frontmatter (--- ... ---)" % hit)
+        elif not re.search(r"^name\s*:\s*\S", fm.group(1), re.M):
+            problems.append("%s frontmatter has no `name`" % hit)
+    return problems
+
+
+def _skill_pkg_gate(path):
+    problems = check_skill_package(path)
+    if problems:
+        print("skill package rejected before upload:", file=sys.stderr)
+        for pr in problems:
+            print("  - " + pr, file=sys.stderr)
+    return not problems
+
+
 def cmd_create_skill(a, auth):
-    desc = {"en_US": a.desc_en}
-    if a.desc_zh:
-        desc["zh_CN"] = a.desc_zh
-    payload = {"org_id": a.org, "name": a.name, "description": desc}
-    if a.display_name:
-        payload["display_name"] = a.display_name
-    if a.owner_agent:
-        payload["owner_agent_id"] = a.owner_agent
-    r = _json_call(_base(a.endpoint) + "/v1/org/skill/create", auth, payload)
+    # POST /v1/org/skill/create is a multipart upload (org_id + file). It creates an
+    # ORGANIZATION-level Skill from the package; the earlier JSON "empty shell" form
+    # (name/description/owner_agent_id) is gone.
+    if not _skill_pkg_gate(a.package):
+        return 2
+    r = _multipart(_base(a.endpoint) + "/v1/org/skill/create", auth, a.package,
+                   {"org_id": a.org})
     err = _fail(r)
     if err:
         print("create skill failed: %s" % err, file=sys.stderr); return 3
     d = r.get("data") or {}
     print("skill created: skill_id=%s name=%s owner_type=%s"
           % (d.get("skill_id"), d.get("name"), d.get("owner_type")))
+    print("  keep skill_id -- `update-skill <pkg> --skill-id %s` pushes the next version."
+          % d.get("skill_id"))
+    return 0
+
+
+def cmd_update_skill(a, auth):
+    # POST /v1/org/skill/update: org-level (owner_type=ORGANIZATION, not bound to an
+    # Agent) Skills only; the new package is published immediately.
+    if not _skill_pkg_gate(a.package):
+        return 2
+    r = _multipart(_base(a.endpoint) + "/v1/org/skill/update", auth, a.package,
+                   {"org_id": a.org, "skill_id": a.skill_id, "category_id": a.category})
+    err = _fail(r)
+    if err:
+        print("update skill failed: %s" % err, file=sys.stderr)
+        print("  (only org-level Skills accept this; an Agent-private Skill is updated with "
+              "that Agent's API Key via gptbots_agent_skill.py)", file=sys.stderr)
+        return 3
+    d = r.get("data") or {}
+    print("skill updated and published: skill_id=%s name=%s owner_type=%s"
+          % (d.get("skill_id"), d.get("name"), d.get("owner_type")))
     return 0
 
 
 def cmd_import_skill(a, auth):
+    if not _skill_pkg_gate(a.package):
+        return 2
     r = _multipart(_base(a.endpoint) + "/v1/org/skill/import", auth, a.package,
                    {"org_id": a.org, "category_id": a.category})
     err = _fail(r)
@@ -548,13 +628,17 @@ def build_parser():
     p.add_argument("--id", required=True, help="mcp_id")
     p.set_defaults(func=cmd_refresh_mcp)
 
-    p = sub.add_parser("create-skill", help="create an empty Skill"); org_arg(p)
-    p.add_argument("--name", required=True, help="<=50 chars")
-    p.add_argument("--display-name")
-    p.add_argument("--desc-en", required=True, help="en_US description (required by the API)")
-    p.add_argument("--desc-zh")
-    p.add_argument("--owner-agent", help="create a PRIVATE skill on this Agent")
+    p = sub.add_parser("create-skill", help="create an org Skill from a .zip/.skill package")
+    org_arg(p)
+    p.add_argument("package")
     p.set_defaults(func=cmd_create_skill)
+
+    p = sub.add_parser("update-skill",
+                       help="replace an org Skill's package (auto-published)"); org_arg(p)
+    p.add_argument("package")
+    p.add_argument("--skill-id", required=True, help="skill_id from create/import/list")
+    p.add_argument("--category", help="new category_id (omit to keep the current one)")
+    p.set_defaults(func=cmd_update_skill)
 
     p = sub.add_parser("import-skill", help="import a .zip/.skill package"); org_arg(p)
     p.add_argument("package")

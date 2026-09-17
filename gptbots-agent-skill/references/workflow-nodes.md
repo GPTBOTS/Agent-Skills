@@ -47,10 +47,26 @@
 - For a `NODE` source, `value` looks like `nodeId#variable_name#variable_id`; the referenced node must be **upstream** (no forward/cyclic references), and its `outputs` must contain that field.
 - `GLOBAL`: system variables such as `sys.agent_id` / `sys.workflow_run_id` / `sys.user_id`.
 
-## Edge handle conventions (frontend handle-connection-point.ts)
+## Edge handle conventions (confirmed against a real workflow export)
 
-- Source handle prefix `right`, target prefix `left`, suffixed by node type in lowercase: e.g. `right<id>-llm` / `left<id>-condition`.
-- The branch handles of `CONDITION`/`INTENT` come from each `conditionBranches[].sourceHandle` / `intents[].sourceHandle`, and must correspond to the edge's `sourceHandle`.
+- A normal edge uses `sourceHandle: "source-<sourceNodeId>"` and `targetHandle: "target-<targetNodeId>"`. (This is the Workflow convention — it is **different** from the FlowAgent `right<id>-<key>` / `left<id>-<key>` form. Don't mix them up.)
+- For a `CONDITION`/`INTENT` node, each branch/intent defines its own `sourceHandle` (an arbitrary unique string, e.g. `source-<nodeId>-<rand>`) in `conditionParam.conditionBranches[].sourceHandle` / `intentParam.intents[].sourceHandle`. The outgoing edge for that branch sets `sourceHandle` to **exactly that value** (targetHandle stays `target-<targetNodeId>`).
+- **The backend requires every branch/intent sourceHandle to have a connected outgoing edge** (`WorkflowRuntimeChecker`: "must have all branches/intents connected"); the validator flags a missing one as `WF_COND_NOT_CONNECTED` / `WF_INTENT_NOT_CONNECTED`.
+- The builder (`build_gptbots_workflow.py`) emits `source-`/`target-` automatically; use `branch_handle(node_id, suffix)` to mint a CONDITION/INTENT handle and pass the same value to both the branch param and `edge(source_handle=...)`.
+- Graph rules enforced by `WorkflowRuntimeChecker` (and the validator): exactly one START / one END; START has out-edges and no in-edge; END has in-edges and no out-edge; COMMENT has no edges; BREAK/CONTINUE/NEXT_LOOP have in-edges and no out-edge; every other node ≥1 in and ≥1 out; unique node id/name; unique edge id; no self-loop; both endpoints exist; the graph is a DAG; LOOP/BATCH carry a `subWorkflow` that recursively satisfies the same rules.
+
+## Per-node parameter rules (backend WorkflowNodeChecker — the validator enforces these)
+
+- Each node must carry its required `*Param` (table above); the validator flags `WF_PARAM_MISSING`. (Exception: inner LOOP/BATCH sub-workflow `END` nodes may have a null `endParam`.)
+- `CONDITION`: `conditionParam.conditionBranches` non-empty with **exactly one `ELSE`**; every branch `sourceHandle` connected (`WF_COND_ELSE` / `WF_COND_NOT_CONNECTED`).
+- `INTENT`: `intentParam.intents` non-empty; every intent `sourceHandle` connected (`WF_INTENT_NOT_CONNECTED`).
+- `HTTP`: `request.url` present and **not an internal/loopback host** (localhost/127.x/10.x/192.168.x/172.16–31.x/169.254.x/::1) on non-OP deployments (`WF_HTTP_INTERNAL_IP`).
+- `VARIABLE_AGGREGATE`: `strategy` must be `FIRST_NON_NULL`; 1–20 groups; each group has a valid identifier `groupName` (`^[a-zA-Z_][a-zA-Z0-9_]*$`), a `groupType`, and 1–10 `variables` whose `type` equals the group type.
+- `LOOP`/`BATCH`: `inputArrays` (and LOOP `intermediateVariables`) must not use the reserved name `index` and must not collide; the node must carry a `subWorkflow` (recursively validated).
+- `SET_INTERMEDIATE_VARIABLE`: at least one `assignment`, each with a non-null `leftValue`; must live inside a LOOP whose `intermediateVariables` define that left value (the runtime checks the cross-level reference).
+- `CODE` needs `code`; `DATABASE` needs `sqlQuery`; `TEXT_PROCESS`/`FILE_PARSE`/`TOOL_API`/`COMMENT` need their param.
+
+Per-node functionality reference (official docs): https://www.gptbots.ai/zh_CN/docs/tutorial/workflow/node
 
 ## Stripped/backfilled on import (follow when generating)
 

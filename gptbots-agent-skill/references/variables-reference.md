@@ -1,6 +1,8 @@
 # GPTBots Referenceable Variables
 
-> Reference with `{{variable_name}}`, **only variables upstream on the path**. **Channel attributes exist only for the connected channel** (`wa_*` only when WhatsApp is connected, `tg_*` only when Telegram is connected…). Pick the right ones per scenario at design time.
+> Reference with `{{variable_name}}` (**double braces**), **only variables upstream on the path**. **Channel attributes exist only for the connected channel** (`wa_*` only when WhatsApp is connected, `tg_*` only when Telegram is connected…). Pick the right ones per scenario at design time.
+>
+> ⚠️ **Never run `str.format()` / f-strings over prompt text that contains `{{...}}`** — `.format()` collapses `{{sys_lang}}` → `{sys_lang}`, and a single-braced variable is no longer recognized by GPTBots (it renders literally). When templating a prompt in a generator, substitute with `.replace("{placeholder}", value)`, not `.format()`. The validator warns `MSG_SINGLE_BRACE_VAR` on any single-brace variable it finds in a prompt or message.
 
 ## System / global (`sys_*`, available on any agent)
 - `sys_conversation_id` conversation ID

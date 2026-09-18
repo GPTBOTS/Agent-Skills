@@ -44,8 +44,8 @@ The switch currently controls only the two paths above. Do not promise that it c
         {"code": 84, "text": "The transfer failed. Please try again later."}
       ],
       "ja": [
-        {"code": 36, "text": "有人サポートに接続しています。"},
-        {"code": 84, "text": "転送に失敗しました。後でもう一度お試しください。"}
+        {"code": 36, "text": "\u6709\u4eba\u30b5\u30dd\u30fc\u30c8\u306b\u63a5\u7d9a\u3057\u3066\u3044\u307e\u3059\u3002"},
+        {"code": 84, "text": "\u8ee2\u9001\u306b\u5931\u6557\u3057\u307e\u3057\u305f\u3002\u5f8c\u3067\u3082\u3046\u4e00\u5ea6\u304a\u8a66\u3057\u304f\u3060\u3055\u3044\u3002"}
       ]
     }
   }
@@ -102,6 +102,21 @@ Conversation properties are values assigned to these definitions for one convers
 
 - `conversation_config.custom_variables` when creating/sending a public API conversation request; use only names already defined in `customVariables[]`.
 - A FlowAgent Variable component with `variableType=CUSTOM_VARIABLE`; downstream nodes read the updated value immediately and later turns in the same conversation keep it.
+
+Include the target definitions in top-level `customVariables[]` / `userProperties[]`, or use targets already defined on the Agent. A Variable assignment alone does not create a definition. STG imported a file containing both the definition and assignment successfully.
+
+The assignment entry observed in that STG export was:
+
+```json
+{
+  "variableName": "var_order_id",
+  "variableType": "CUSTOM_VARIABLE",
+  "variableOperateType": null,
+  "value": "{{start_msg_text}}"
+}
+```
+
+Preserve this representation when updating an export. The builder's `var_cfgs()` uses `{variableName, operation, value}` with `operation` set to `Cover`, `Clear`, or `Append`; this input representation is also supported. Do not infer that the exported `null` is a request to clear the value. For success connections, both `right{id}-variable` (STG export) and `right{id}-variable_true` (builder) use edge `name:"_true"`; see `./flowagent-components.md`.
 
 Never copy a real conversation's value map into the top-level `.bot`; doing so leaks runtime state and changes the default for every future conversation.
 

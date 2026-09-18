@@ -1,0 +1,124 @@
+{
+  "formatVersion": "1.0",
+  "exportType": "BOT",
+  "name": "Codex Conversation Flow 0918",
+  "botType": "Flow",
+  "multiModal": {
+    "multiModalInput": {"fileLimit": 1}
+  },
+  "customVariables": [
+    {
+      "name": "var_order_id",
+      "type": "STRING",
+      "value": "DEFAULT-0918"
+    }
+  ],
+  "flowRule": {
+    "components": [
+      {
+        "id": 1,
+        "type": "Input",
+        "nextComponents": [
+          {
+            "id": 100001,
+            "name": "",
+            "condition": "",
+            "nextComponentId": 2,
+            "sourceHandle": "right1-input",
+            "targetHandle": "left2-message",
+            "sort": 100001
+          }
+        ]
+      },
+      {
+        "id": 2,
+        "type": "Message",
+        "content": "{\"Text\":\"BEFORE={{var_order_id}}; SESSION={{sys_conversation_id}}\"}",
+        "contentType": "Text",
+        "nextComponents": [
+          {
+            "id": 100002,
+            "name": "",
+            "condition": "",
+            "nextComponentId": 3,
+            "sourceHandle": "right2-message",
+            "targetHandle": "left3-variable",
+            "sort": 100002
+          }
+        ]
+      },
+      {
+        "id": 3,
+        "type": "Variable",
+        "variableSetValueConfigs": [
+          {
+            "variableType": "CUSTOM_VARIABLE",
+            "variableOperateType": null,
+            "value": "{{start_msg_text}}",
+            "variableName": "var_order_id"
+          }
+        ],
+        "exceptionSwitch": true,
+        "nextComponents": [
+          {
+            "id": 100003,
+            "name": "_true",
+            "condition": "",
+            "nextComponentId": 4,
+            "sourceHandle": "right3-variable",
+            "targetHandle": "left4-message",
+            "sort": 100003
+          },
+          {
+            "id": 100004,
+            "name": "_exception",
+            "condition": "",
+            "nextComponentId": 5,
+            "sourceHandle": "right3-variable_exception",
+            "targetHandle": "left5-message",
+            "sort": 100004
+          }
+        ]
+      },
+      {
+        "id": 4,
+        "type": "Message",
+        "content": "{\"Text\":\"AFTER={{var_order_id}}\"}",
+        "contentType": "Text",
+        "nextComponents": [
+          {
+            "id": 100005,
+            "name": "",
+            "condition": "",
+            "nextComponentId": 6,
+            "sourceHandle": "right4-message",
+            "targetHandle": "left6-output",
+            "sort": 100005
+          }
+        ]
+      },
+      {
+        "id": 5,
+        "type": "Message",
+        "content": "{\"Text\":\"ASSIGNMENT-FAILED-0918\"}",
+        "contentType": "Text",
+        "nextComponents": [
+          {
+            "id": 100006,
+            "name": "",
+            "condition": "",
+            "nextComponentId": 6,
+            "sourceHandle": "right5-message",
+            "targetHandle": "left6-output",
+            "sort": 100006
+          }
+        ]
+      },
+      {
+        "id": 6,
+        "type": "Output",
+        "nextComponents": []
+      }
+    ]
+  }
+}

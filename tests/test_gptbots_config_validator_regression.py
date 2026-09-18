@@ -1,16 +1,17 @@
+import importlib.util
 import json
+import os
 import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
+from types import ModuleType
 from typing import TypedDict
 
-VALIDATOR = (
-    Path(__file__).parents[1]
-    / "gptbots-agent-skill"
-    / "scripts"
-    / "validate_gptbots_config.py"
-)
+import pytest
+
+SCRIPTS = Path(__file__).parents[1] / "gptbots-agent-skill" / "scripts"
+VALIDATOR = SCRIPTS / "validate_gptbots_config.py"
 
 JsonValue = str | int | float | bool | None | list["JsonValue"] | dict[str, "JsonValue"]
 JsonObject = dict[str, JsonValue]
@@ -46,6 +47,15 @@ def _run_validator(tmp_path: Path, config: JsonObject) -> tuple[int, ValidationR
         text=True,
     )
     return completed.returncode, _decode_result(completed.stdout)
+
+
+def _load_script(module_name: str) -> ModuleType:
+    spec = importlib.util.spec_from_file_location(module_name, SCRIPTS / f"{module_name}.py")
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_accepts_minimal_valid_workflow(tmp_path: Path) -> None:
@@ -125,6 +135,83 @@ def test_rejects_creativity_level_above_one(tmp_path: Path) -> None:
 
     assert exit_code == 1
     assert "VAL_RANGE" in {problem["code"] for problem in result["errors"]}
+
+
+def test_agent_builder_accepts_platform_creativity_boundary() -> None:
+    builder = _load_script("build_gptbots_agent")
+    config = builder.agent_config("Boundary", "Valid identity prompt", creativity=1.0)
+    assert config["creativityLevel"] == 1.0
+
+
+def test_agent_builder_rejects_creativity_above_platform_boundary() -> None:
+    builder = _load_script("build_gptbots_agent")
+    with pytest.raises(ValueError, match=r"\[0, 1\]"):
+        _ = builder.agent_config("Boundary", "Valid identity prompt", creativity=1.01)
+
+
+def test_audio_builder_accepts_platform_creativity_boundary() -> None:
+    builder = _load_script("build_gptbots_audioagent")
+    config = builder.audio_config(
+        "Boundary",
+        identity_prompt="Valid identity prompt",
+        creativity=1.0,
+    )
+    assert config["creativityLevel"] == 1.0
+
+
+def test_audio_builder_rejects_creativity_above_platform_boundary() -> None:
+    builder = _load_script("build_gptbots_audioagent")
+    with pytest.raises(ValueError, match=r"\[0, 1\]"):
+        _ = builder.audio_config(
+            "Boundary",
+            identity_prompt="Valid identity prompt",
+            creativity=1.01,
+        )
+
+
+def _supported_extended_bot_configs() -> list[JsonObject]:
+    audio_builder = _load_script("build_gptbots_audioagent")
+    loop_builder = _load_script("build_gptbots_loopagent")
+    return [
+        audio_builder.audio_config(
+            "Audio entrypoint parity",
+            identity_prompt="You are a concise voice support agent.",
+        ),
+        loop_builder.loopagent_config(
+            "Loop entrypoint parity",
+            persona="You are a concise support agent.",
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    "config",
+    _supported_extended_bot_configs(),
+    ids=["audio", "loopagent"],
+)
+def test_module_entrypoint_matches_script_for_extended_bot_types(
+    tmp_path: Path,
+    config: JsonObject,
+) -> None:
+    config_path = tmp_path / "extended.bot"
+    _ = config_path.write_text(json.dumps(config), encoding="utf-8")
+    environment = {**os.environ, "PYTHONPATH": str(SCRIPTS)}
+    script_result = subprocess.run(
+        [sys.executable, str(VALIDATOR), str(config_path), "--json"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    module_result = subprocess.run(
+        [sys.executable, "-m", "gptbots_config_validator", str(config_path), "--json"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+    assert script_result.returncode == 0
+    assert module_result.returncode == script_result.returncode
+    assert _decode_result(module_result.stdout) == _decode_result(script_result.stdout)
 
 
 def test_preserves_flow_handle_validation(tmp_path: Path) -> None:

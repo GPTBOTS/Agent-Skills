@@ -1,5 +1,45 @@
 # Changelog
 
+## 2026-09-18 (2.2.0)
+
+### Added
+
+- Latest `.bot` field support: localized human-service messages, the optional
+  `sendHumanTipSwitch`, custom-variable definitions and user-property definitions.
+  Validate field types, duplicate names/codes and runtime-data privacy boundaries;
+  preserve compatible null placeholders and warn on unknown integer message codes.
+- Shared field guidance for conversation-scoped values, definition defaults,
+  public API injection and property-update confirmation using actual success/failure
+  collections with read-after-write verification.
+- A component-specific warning when a Flow Human node omits `humanConfig`, while
+  retaining compatibility with bot-level fallback configuration.
+
+### Fixed
+
+- Accept the STG-exported Variable success handle `right{id}-variable` with
+  `name:"_true"`, alongside the builder's `right{id}-variable_true` representation.
+  Invalid success names, component IDs and handle keys remain rejected.
+- Keep script and module validator entry points consistent, including Audio and
+  LoopAgent checks; allow the platform's closed creativity range `[0, 1]` in the
+  Agent and Audio builders.
+- Align Variable documentation with platform exports and importing definitions
+  together with assignment nodes.
+
+### Changed
+
+- LoopAgent shared-field updates require an existing platform export and preserve
+  its complete `clawRule`, model and unrelated fields. The authoring guide no longer
+  generates a replacement rule or substitutes a builder default model.
+
+### Validation
+
+- 95 repository tests pass, including 30 Flow export and Human compatibility cases.
+- Five original STG Flow exports pass both validator entry points. STG UI and
+  public API checks cover variable scope, persistence, defaults and real partial
+  property-update failures.
+- LiveDesk code84 and LiveChat code36 runtime switch comparisons still require
+  connected test channels; this release does not claim those scenarios passed.
+
 ## 2026-09-14 (2.1.0)
 
 Platform API update: Skills are now managed as **packages** end to end, for both org-level

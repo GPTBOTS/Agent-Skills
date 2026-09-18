@@ -41,7 +41,7 @@ authoring-skills/
     └── validate_knowledge_files.py       # knowledge-base file quality check (Document / Table / Q&A)
 ```
 
-No per-agent files are bundled: users supply their own exported `.bot`/`.flow` for optimization tasks, and new configs are generated from scenario + requirements.
+No per-agent files are bundled: users supply their own exported `.bot`/`.flow` for optimization tasks. New QuestionAnswer, FlowAgent, Audio Agent and Workflow configs are generated from scenario + requirements; LoopAgent shared-field updates require an existing export and preserve its `clawRule`.
 
 ## Constraints (consistent with the plan)
 
@@ -49,7 +49,7 @@ No per-agent files are bundled: users supply their own exported `.bot`/`.flow` f
 - Produce *plaintext* `.bot`/`.flow` (decryption-free, directly importable).
 - **Keep the package English-only / ASCII source.** No CJK prose in `SKILL.md`, `README.md`, `CHANGELOG.md` or `references/` — name console paths in English. Where a CJK string is *data* (the Audio Agent TTS symbol filter; the image-placeholder labels in `validate_knowledge_files.py`), write it as `\uXXXX` escapes and comment what it is, so the source stays ASCII and the runtime value is unchanged. Check with: `grep -rn -P "[\x{2e80}-\x{9fff}\x{ff00}-\x{ffef}\x{3000}-\x{303f}]" --include="*.md" --include="*.py" .`
 - After generation you *must* run `scripts/validate_gptbots_config.py` with Python 3.11+ to self-check; do not deliver if it fails.
-- Leave model id / cross-organization references / authentication blank (backfilled or cleared on import); when real ids are needed, query them with `GET /v1/model/list` (`scripts/gptbots_org_api.py models`, account DevKey auth) — `modelId` is the stable model **version** id configs bind to. **LoopAgent is the exception:** its `clawRule` model is never backfilled (blank = a dead agent, and it wipes the target's model on update), and its models come from the AMH gateway, so the lookup must pass `--agent-type LOOP_AGENT`; with no credentials to query, `build_gptbots_loopagent.py` pins `DEFAULT_CLAW_MODEL` (`0ec52e3e7dfc000f9470eb15`, GPT-5.6-Luna). Re-pin that constant (and `CLAW_DEFAULT_MODEL` in the validator) when the platform default moves.
+- Leave model id / cross-organization references / authentication blank where the target type's import rules require it; when real ids are needed, query them with `GET /v1/model/list` (`scripts/gptbots_org_api.py models`, account DevKey auth). **LoopAgent shared-field updates preserve the entire exported `clawRule`, including its model ID.** Do not replace it with a builder default or generate a new rule; obtain a corrected platform export if the rule or model is invalid. See `references/create-gptbots-loopagent.md`.
 
 ## Maintainability (sync when the schema drifts)
 

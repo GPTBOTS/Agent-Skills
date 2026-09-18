@@ -3,7 +3,7 @@ name: gptbots-agent-skill
 description: Create, inspect, update, validate, publish, and operate GPTBots Agents, FlowAgents, LoopAgents, Audio Agents, and Workflows (.bot/.flow). Use for GPTBots configuration and prompt design, Tools/MCPs/Skills, model lookup, version release or rollback, Open API calls, evaluation and RAG testing, conversation LogTree diagnosis, knowledge-base management, and converting PDF, Word, Excel, web, or FAQ content into import-ready files. Trigger whenever the user mentions GPTBots, provides a .bot/.flow file, or asks to build, optimize, publish, test, diagnose, or manage GPTBots resources.
 license: MIT
 metadata:
-  version: 2.1.0
+  version: 2.2.0
   generatedBy: gptbots-agent-skill
 ---
 

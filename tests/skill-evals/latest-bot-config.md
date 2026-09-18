@@ -1,6 +1,6 @@
 # Latest `.bot` configuration Skill evaluations
 
-Run each prompt once without the updated Skill as a baseline and once with `gptbots-agent-skill` version `1.4.1`. Evaluate behavior, not exact wording.
+Run each prompt once without the updated Skill as a baseline and once with `gptbots-agent-skill` version `2.1.0`. The latest Bot config behavior was first evaluated in version `1.4.1` before rebasing onto the newer main branch. Evaluate behavior, not exact wording.
 
 ## Service tips
 

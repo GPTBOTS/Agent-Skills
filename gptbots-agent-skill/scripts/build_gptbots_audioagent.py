@@ -241,8 +241,8 @@ def audio_config(name, engine_mode="REALTIME", identity_prompt="",
     associatedWorkflows, memory settings, reasoningEffort, plugins,
     userProperties, ...) can be passed through **kwargs.
     """
-    if creativity is not None and not (0 <= creativity < 0.95):
-        raise ValueError("creativityLevel must be in [0, 0.95) or None")
+    if creativity is not None and not (0 <= creativity <= 1):
+        raise ValueError("creativityLevel must be in [0, 1] or None")
     if not isinstance(max_tokens, int) or max_tokens <= 0:
         raise ValueError("maxRespTokens must be a positive integer (and must not exceed "
                          "the chat model's context limit)")

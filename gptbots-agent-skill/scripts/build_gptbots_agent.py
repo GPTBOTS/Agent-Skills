@@ -83,15 +83,15 @@ def agent_config(name, prompt, first_message=None, preset_questions=None, creati
     the suggested questions are `presetQuestions` — using `welcomeMessage` /
     `guidingQuestions` imports them as nothing.
 
-    creativity must be in [0, 0.95) or None (the platform allows a null
+    creativity must be in [0, 1] or None (the platform allows a null
     creativityLevel); model id is left blank (backend backfills — never invent
     one); plugin auth / cross-org references must stay blank too. Pass any other
     documented top-level field (reasoningEffort, modeType, dataEnable+knowledge
     config, toolsEnable, …) via **extra — copy enum-bearing blocks from a real
     export rather than guessing.
     """
-    if creativity is not None and not (0 <= creativity < 0.95):
-        raise ValueError("creativityLevel must be in [0, 0.95) or None")
+    if creativity is not None and not (0 <= creativity <= 1):
+        raise ValueError("creativityLevel must be in [0, 1] or None")
     if not (prompt and prompt.strip()):
         raise ValueError("the identity prompt is the highest-leverage field — it must be non-empty")
     cfg = {"formatVersion": "1.0", "exportType": "BOT",
@@ -137,7 +137,8 @@ def save(cfg, path, validate=True):
 
 
 def _demo(outdir):
-    out = Path(outdir); out.mkdir(parents=True, exist_ok=True)
+    out = Path(outdir)
+    out.mkdir(parents=True, exist_ok=True)
     cfg = agent_config(
         "Demo Agent",
         prompt="# Role\nYou are a demo support agent.\n# Boundaries\nOnly answer "

@@ -177,17 +177,19 @@ Retrieves from the knowledge base: **passes the original upstream input through 
 ## Variable Assignment
 Assigns values to **user attributes or custom variables**, **deterministically** (more stable than the LLM's "user attribute" self-update). After assignment, downstream references to the variable get the latest value.
 
-**Prerequisite (critical for imports):** at least one **user attribute or custom variable** must already exist in the workspace; otherwise there is no assignable target, the node can't be configured, and it **can't connect downstream**. **Importing a `.bot` does NOT auto-create these variables** — so a Variable node whose targets aren't pre-defined shows "No variables available" and its `variableSetValueConfigs` are silently dropped. For the common "collect fields → act" pattern you usually **don't need a Variable node at all**: route the ChatGather's collect-complete edge straight to the next step (e.g. human handoff); the collected fields + conversation context carry forward, and key events capture the business type/status. Only use Variable assignment when the target attributes are pre-defined in the workspace.
+**Prerequisite:** each assignment target needs a definition, either included in the `.bot` or already configured on the target Agent. Importing top-level `customVariables[]` / `userProperties[]` can create the targets together with the Variable node; a `variableSetValueConfigs[]` entry alone does not define a variable. STG import, assignment and export were verified with a custom-variable definition included in the file. After import, check the target selector and run the assignment; an undefined target can leave the node unconfigured.
+
+Define custom variables in top-level `customVariables[]` and user attributes in top-level `userProperties[]`; see `./bot-config-fields.md`. A custom-variable assignment updates the conversation-scoped value, not the `.bot` default. The new value is available downstream immediately and persists for later turns in that conversation.
 
 **Config:** you can add **multiple assignments**, each independent; each = target variable + operation + value.
 - Operations: `Overwrite` (replace the original value) / `Append` (**`list` type only**, add an item to the end) / `Clear`.
 - Value: a literal, or `{{reference}}` (upstream output / user input / another variable).
 
 **Output (two branches, pass through the upstream input):**
-- `Success`: sourceHandle `right{id}-variable_true`, edge `name:"_true"`.
+- `Success`: sourceHandle `right{id}-variable` (observed STG export) or `right{id}-variable_true` (builder input), with edge `name:"_true"` in both forms.
 - `Failure`: sourceHandle `right{id}-variable_exception`, edge `name:"_exception"`.
 
-> ⚠️ **The Success outlet is `variable_true`, never the bare `variable` handle** (same failure mode as the Condition `_true` port): a success edge wired as `right{id}-variable`/`name:null` does not anchor to the "assignment successful" port, so the canvas draws a floating line and greys the port out. The builder's `connect(var, dst)` auto-emits `variable_true`+`_true`; the validator flags the bare handle as `VAR_SUCCESS_HANDLE`.
+The builder's `connect(var, dst)` continues to emit `variable_true` + `_true`. Preserve a platform-exported `variable` + `_true` edge when updating a file. The validator accepts both and reports `VAR_SUCCESS_HANDLE` if the success edge's name is missing or differs from `_true`; component ID and handle-key checks still apply.
 
 ## Workflow
 Calls an external workflow (a standalone node, **deterministic** execution; distinct from the autonomous invocation of a workflow attached to an LLM). A Workflow is a **parameterized program interface** (JSON inputs/outputs, no conversation with the user; connections only trigger it, data flows via explicit parameters), suitable for **deterministic data processing / automation**: calling external APIs, running code, structured data transformation, loop/batch processing, complex conditional orchestration — encapsulating such logic into a Workflow and then calling it is more stable and clearer than piling up nodes in the AgentFlow. Available internal nodes include LLM, intent recognition, knowledge retrieval, HTTP request, code, condition, loop, etc.
@@ -223,6 +225,8 @@ Passes **a preconfigured piece of content** (a structured object) directly to th
 Hand off to a human — hand the conversation to a **third-party human customer-service system**, after which there is no more AI reply.
 
 The vendor is set in the top-level `humanConfig.manufacturer`. Its value **MUST be a `HumanManufacturerEnum` value, not a display name** — one of: `Intercom`, `Webhook`, `LiveChat`, `SoBot`, `ZohoSalesIQ`, `LiveDesk`, `Omnichat` (`Omnichat` = the Crescendo Lab vendor). A display name such as `"livechat"`, `"Livedesk"`, `"Zoho Sales IQ"` or `"Crescendo Lab"` will fail import with `Invalid import file: value "..." is not allowed for field "manufacturer"`. `humanConfig.status` is `enable` / `disable`.
+
+Service-tip fields are `humanConfig.sendHumanTipSwitch` and `humanConfig.multiLanguages`; use the exact schema and status codes in `./bot-config-fields.md`. Do not fill an omitted switch with a guessed default, because Flow Human + LiveDesk and existing LoopAgent + LiveChat intentionally interpret omission in opposite ways.
 
 ⚠️ **Also write `humanConfig` at the component level** (on the `Human` component itself), not only at the bot-entity level. The transfer-to-human config form renders from the component-level `humanConfig`; if it is missing the node's config shows up blank. The backend backfills entity→component on import, but the generator should set it directly on the component.
 
@@ -345,7 +349,7 @@ Component-nested:
 - `gatherFields[].valueType`: `string` `bool` `integer` `number` `datetime` `list`
 - `gatherFields[].optionFieldType` (FormGather): `string` `multiString` `bool` `integer` `number` `datetime` `phoneNumber` `email` `radio` `checkbox`
 - `gatherControl.formGatherType` (FormGather): `single` `all`
-- `variableSetValueConfigs[]` real shape: `{variableName, operation, value}` — `operation` is `Cover` `Clear` `Append` (**capitalized**, not `COVER`/`CLEAR`/`APPEND`). `value` may embed `{{...}}`. (The legacy `variableType`/`variableOperateType` fields are not in the real export.)
+- `variableSetValueConfigs[]`: builder inputs use `{variableName, operation, value}`, where `operation` is `Cover` / `Clear` / `Append`. STG also exports `{variableName, variableType:"CUSTOM_VARIABLE", variableOperateType:null, value}` without `operation`. These are supported representations; do not strip `variableType` or invent an operation when updating an export. Non-null `variableOperateType` uses `COVER` / `CLEAR` / `APPEND`; `variableType` uses `USER_PROPERTY` / `CUSTOM_VARIABLE`. `value` may embed `{{...}}`. See `./bot-config-fields.md` for the observed shape and definition scope.
 - `regularGroups[].combine`: `and` `or`
 - `regularGroups[].items[].category`: `GlobalVariable` `UserProperty` `BrowserProperty` `Upstream` `WhatsApp` `Telegram` `LiveChat` `LiveDesk` `Line` `Start` `CustomVariable` `KeyEvent`
 - `regularGroups[].items[].type`: `string` `number` `datetime` `bool` `list`
@@ -442,7 +446,7 @@ handle can't be resolved and the edge falls back to the node origin):**
 - Regular: `regular_<groupId>_true` / `regular_<groupId>_false`; `condition` carries the group id.
 - ChatGather: `qa-collect_true` / `qa-collect_false`.
 - FormGather: `formgather_true` / `formgather_false`.
-- Variable: `variable_true` / `variable_exception`.
+- Variable: success `variable_true` (builder) or `variable` (STG export), both with name `_true`; failure `variable_exception` with name `_exception`.
 - Exception outlet (a wired edge when `exceptionSwitch=true`): LLM `LLM_exception`, Condition `conditions_exception`, ChatGather `qa-collect_exception`, Variable `variable_exception`, and the Classifier (Branch) `branch_exception` (all with edge `name:"_exception"`). For the Classifier the exception edge is optional — wire it to route classification errors to a fallback node, or omit it and let `exceptionSwitch` handle the exception internally.
 
 **Common wrong handles (all draw distorted lines — never emit these):**

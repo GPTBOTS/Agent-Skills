@@ -26,9 +26,11 @@
 - **LiveDesk**: `ld_user_id` · `ld_conversation_id` · `ld_contact_id` · `ld_phone` · `ld_email` · `ld_full_name` · `ld_channels_sender` (object) · `ld_user_sender` (object)
 - **LINE**: `line_user_id`
 
-## User attributes / custom variables (must be defined first)
-- `{{<attribute_name>}}`: **user attribute** (bound to the user, e.g. `name`)
-- `{{<variable_name>}}`: **custom variable** (agent-global)
+## User properties / custom variables (must be defined first)
+- `{{<property_name>}}`: **user property**, defined in top-level `userProperties[]`; its runtime value is bound to one user and can cross conversations when the platform has a stable user identity.
+- `{{<variable_name>}}`: **custom variable / conversation property**, defined in top-level `customVariables[]`; its runtime value belongs to one conversation and can differ from the `.bot` default.
+
+Definitions and runtime values are separate. `.bot` contains definitions/defaults only. Set conversation values through `conversation_config.custom_variables` or a FlowAgent Variable component; set user values through the User API or an enabled conversation update. See `./bot-config-fields.md` for schemas and privacy boundaries.
 
 ## Node output
 - `{{<upstream_node_name>}}`: reference an upstream node's output (give nodes unique, descriptive names at design time; the real platform variable name is mapped by the generating skill).

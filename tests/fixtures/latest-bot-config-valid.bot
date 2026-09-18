@@ -1,0 +1,46 @@
+{
+  "formatVersion": "1.0",
+  "exportType": "BOT",
+  "name": "Latest bot config fixture",
+  "botType": "QuestionAnswer",
+  "multiModal": {
+    "multiModalInput": {
+      "fileLimit": 1
+    }
+  },
+  "humanConfig": {
+    "manufacturer": "LiveDesk",
+    "status": "enable",
+    "sendHumanTipSwitch": true,
+    "multiLanguages": {
+      "en": [
+        {
+          "code": 36,
+          "text": "Connecting you to human support."
+        },
+        {
+          "code": 84,
+          "text": "The transfer failed. Please try again later."
+        }
+      ]
+    }
+  },
+  "customVariables": [
+    {
+      "name": "var_order_id",
+      "type": "STRING",
+      "value": ""
+    }
+  ],
+  "userProperties": [
+    {
+      "name": "customer_tier",
+      "showName": "Customer tier",
+      "type": "string",
+      "value": "standard",
+      "desc": "Support tier used for routing",
+      "chatUpdate": true,
+      "chatQuery": true
+    }
+  ]
+}

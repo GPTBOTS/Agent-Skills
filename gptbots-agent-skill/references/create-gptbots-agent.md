@@ -5,7 +5,7 @@
 ## Workflow (follow the order strictly)
 
 ### 1. Requirements discussion (clarify before building)
-Confirm item by item; do not invent anything the user did not state: business goal / channels / materials (FAQ, product database, API, web pages, images…) / data to collect / handoff method / boundaries and tone. See `./materials-mapping.md` for how materials are connected. When optimizing an existing Agent, start from the `.bot` file the user provided and change only what the user asked for; if they want to optimize but provided no file, ask them to export it from the platform first.
+Confirm item by item; do not invent anything the user did not state: business goal / channels / materials (FAQ, product database, API, web pages, images…) / data to collect / handoff method / service-tip preference / conversation and user properties / boundaries and tone. See `./materials-mapping.md` for how materials are connected. When optimizing an existing Agent, start from the `.bot` file the user provided and change only what the user asked for; if they want to optimize but provided no file, ask them to export it from the platform first.
 
 ### 2. Reuse the existing public API to fetch real references (critical; do not leave blanks or guess)
 If the user provided an API key and wants to connect resources from an existing Agent, use the **public Open API** to pull real ids into the config (**never call internal/console APIs**). Use the regional base URL `https://api-${endpoint}.gptbots.ai` (`sg`=Singapore default, `jp`=Japan, `th`=Thailand):
@@ -21,9 +21,10 @@ Start from the user's existing `.bot` (or generate the skeleton with `agent_conf
 - Model id (`chatModelVersionId`, etc.) **left blank or as a placeholder** — the backend import backfills the default model; inventing real ids will cause errors.
 - Plugin authentication, `apiSecrets`, cross-organization references **left blank** — import always clears them.
 - **Always include a top-level `multiModal` block, and a COMPLETE one.** The import does no backfill: a null `multiModalInput` NPEs the console auto-save (HTTP 500 on every save, backend regression 2025-12-02), and a bare `{"multiModalInput": {}}` additionally answers **every** `POST /v2/conversation/message` with `50000 NullPointerException` because the chat endpoint unboxes `multiModalInput.fileLimit`. `agent_config()` emits the known-good block automatically — don't hand-write it and don't guess the enum values. (`L0_MULTIMODAL_AUTOSAVE_NPE`, `L0_MULTIMODAL_FILE_LIMIT`)
-- `creativityLevel ∈ [0,0.95)` **or `null`** (the platform allows a null creativityLevel). Set `maxRespTokens` (default 4096).
+- `creativityLevel ∈ [0,1]` **or `null`**; preserve platform-exported `1.0` values. Set `maxRespTokens` (default 4096).
 - **Field-name gotchas (confirmed against a real export):** the opening line is **`firstMessage`** (NOT `welcomeMessage`) and the suggested questions are **`presetQuestions`** (NOT `guidingQuestions`). The plausible-looking names are silently dropped on import, so the agent ships with no opening line / no suggested questions. `agent_config(first_message=..., preset_questions=[...])` emits the correct keys; the validator warns (`AGENT_WELCOME_FIELD` / `AGENT_PRESET_FIELD`) if the wrong ones appear.
 - Other documented top-level fields seen in real exports (pass via `**extra`, copying any enum-bearing block from a real export rather than guessing): `reasoningEffort`/`showReasoning`/`reasoningEnabled`, `modeType`, knowledge base (`dataEnable` + `docCorrelation`/`matchDataLimit`/`customKnowledgeType`/`embeddingRate`/`rerankSwitch`), `memoryEnable`/`longTermMemory`/`shortTermMemory`/`shortTermMemoryRound`, `toolsEnable`/`workflowEnable`+`associatedWorkflows`, `nextQuestion`+`systemPrompt`, `quickCommands`, `plugins`, `userProperties`.
+- For `humanConfig`, `customVariables[]`, and `userProperties[]`, follow `./bot-config-fields.md`. Do not put conversation-scoped values or per-user values into `.bot`.
 - **The identity `prompt` is the highest-leverage field in the whole config** — it drives the Agent's runtime quality and efficiency. Write it with extra care: clear role/goal/boundaries/output format in short imperative sentences, no filler, no internal contradictions (see *Prompt quality for LLM-capable nodes* in SKILL.md).
 
 ### 4. Quality check (mandatory; do not deliver if it fails)
@@ -39,4 +40,5 @@ Place the new/updated `.bot` file in the current working directory and return it
 ## References
 - Material → mechanism mapping: `./materials-mapping.md`.
 - Referenceable variables: `./variables-reference.md`.
+- Human-service and property fields: `./bot-config-fields.md`.
 - Authoritative public API docs: https://www.gptbots.ai/docs/api-reference/overview

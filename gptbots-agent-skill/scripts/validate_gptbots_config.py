@@ -37,6 +37,11 @@ import json
 import re
 import sys
 
+from gptbots_config_validator.bot_fields import (
+    check_bot_fields,
+    check_human_config as check_extended_human_config,
+)
+
 # Bot types this skill authors. Mirrors ai.altatech.oversea.common.enums.BotType, minus the
 # types this skill does not generate (MultiAgent, Clawsearch). "Claw" is the historical alias
 # of LoopAgent - the backend still accepts it on read, but always emit "LoopAgent".
@@ -112,11 +117,11 @@ GATHER_VALUE_TYPES = {"string", "bool", "integer", "number", "datetime", "list"}
 OPTION_FIELD_TYPES = {"string", "multiString", "bool", "integer", "number",
                       "datetime", "phoneNumber", "email", "radio", "checkbox"}  # OptionFieldTypeEnum
 FORM_GATHER_TYPES = {"single", "all"}                                         # FormGatherType
-VARIABLE_TYPES = {"USER_PROPERTY", "CUSTOM_VARIABLE"}                         # VariableType (legacy field, optional)
-VARIABLE_OPERATE_TYPES = {"CLEAR", "COVER", "APPEND"}                         # VariableOperateType (legacy field)
-# Real export shape of variableSetValueConfigs[] is {variableName, operation, value};
-# `operation` is capitalized (Cover/Clear/Append), NOT the legacy COVER/CLEAR/APPEND.
-VARIABLE_OPERATIONS = {"Cover", "Clear", "Append"}                            # operation (real export)
+VARIABLE_TYPES = {"USER_PROPERTY", "CUSTOM_VARIABLE"}                         # VariableType (optional)
+VARIABLE_OPERATE_TYPES = {"CLEAR", "COVER", "APPEND"}                         # VariableOperateType (optional)
+# Builder inputs use operation; STG exports can instead carry variableType and
+# variableOperateType=null. Preserve either representation and validate present values.
+VARIABLE_OPERATIONS = {"Cover", "Clear", "Append"}                            # operation (builder input)
 COMBINE_TYPES = {"and", "or"}                                                 # CombineEnum
 REGULAR_CATEGORIES = {"GlobalVariable", "UserProperty", "BrowserProperty", "Upstream",
                       "WhatsApp", "Telegram", "LiveChat", "LiveDesk", "Line", "Start",
@@ -682,14 +687,13 @@ def _check_component_enums(c, cp, rep):
         for i, v in enumerate(vscs):
             if isinstance(v, dict):
                 vp = f"{cp}.variableSetValueConfigs[{i}]"
-                # Real export shape: {variableName, operation, value}. `operation` is
-                # capitalized (Cover/Clear/Append). Validate it when present.
+                # Builder operation is capitalized (Cover/Clear/Append).
                 _check_enum(v.get("operation"), VARIABLE_OPERATIONS, "COMP_ENUM_VARIABLE_OPERATION", vp + ".operation", rep, "operation")
                 if _is_blank(v.get("variableName")):
                     rep.err("COMP_VARIABLE_NAME", vp + ".variableName",
                             "variableSetValueConfigs entry is missing variableName",
-                            "Each assignment needs {variableName, operation, value}")
-                # legacy fields, still validated if a caller emits them
+                            "Each assignment needs a variableName matching a defined target")
+                # Platform exports can carry these fields without operation.
                 _check_enum(v.get("variableType"), VARIABLE_TYPES, "COMP_ENUM_VARIABLE_TYPE", vp + ".variableType", rep, "variableType")
                 _check_enum(v.get("variableOperateType"), VARIABLE_OPERATE_TYPES, "COMP_ENUM_VARIABLE_OPERATE_TYPE", vp + ".variableOperateType", rep, "variableOperateType")
     # rule groups (Regular / Bool)
@@ -759,30 +763,15 @@ def _check_component_edges(c, cp, comp_type_by_id, rep):
             rep.err("CONDITION_EDGE_NAME", cp + ".nextComponents",
                     f"Condition #{owner_id} conditions_false edge name must be \"_false\" "
                     f"(got {false_e.get('name')!r})", 'Set name="_false"')
-    # A Variable (assignment) node's success outlet is `variable_true` (edge
-    # name="_true") — NOT the bare `variable` handle. The platform's "assignment
-    # successful" port is keyed `variable_true`, so a plain `right{id}-variable`
-    # edge does not anchor to that port: the canvas draws a detached/floating line
-    # and the port greys out (identical failure to a Condition true-edge missing
-    # its `_true`). The `_parse_handle` key drops the `_true`/`_exception` suffix,
-    # so EDGE_SOURCE_KEY cannot catch this — check the raw suffix here.
+    # STG exports success as `variable`; the builder emits `variable_true`.
+    # Both identify success with name="_true". Id/key checks still run below.
     if owner_type == "Variable":
         edges = [nx for nx in (c.get("nextComponents") or []) if isinstance(nx, dict)]
         for nx in edges:
             sh = str(nx.get("sourceHandle") or "")
-            # the bare success handle: ends with "-variable" and carries no suffix
-            if sh == f"right{owner_id}-variable" or (sh.endswith("-variable") and "_" not in sh.rsplit("-", 1)[-1]):
+            if sh.endswith(("-variable", "-variable_true")) and nx.get("name") != "_true":
                 rep.err("VAR_SUCCESS_HANDLE", cp + ".nextComponents",
-                        f"Variable #{owner_id} success edge uses the bare handle "
-                        f"'{sh}' — the 'assignment successful' port is keyed "
-                        "'variable_true', so this edge does not anchor to it and the "
-                        "canvas draws a floating/greyed line",
-                        f"Use sourceHandle 'right{owner_id}-variable_true' with name "
-                        '"_true" (connect(var, dst) / connect(var, dst, suffix="true") '
-                        "in the builder now emits this automatically)")
-            elif sh.endswith("-variable_true") and nx.get("name") != "_true":
-                rep.err("VAR_SUCCESS_HANDLE", cp + ".nextComponents",
-                        f"Variable #{owner_id} variable_true edge name must be "
+                        f"Variable #{owner_id} success edge '{sh}' name must be "
                         f"\"_true\" (got {nx.get('name')!r})", 'Set name="_true"')
     for k, nx in enumerate(c.get("nextComponents") or []):
         if not isinstance(nx, dict):
@@ -1023,6 +1012,15 @@ def check_flow(flow_rule, rep):
                          "empty 'Maximum Response'; default it (e.g. 4096)")
         _check_component_enums(c, cp, rep)
         _check_component_edges(c, cp, comp_type_by_id, rep)
+        if ctype == "Human":
+            if "humanConfig" in c:
+                check_extended_human_config(c.get("humanConfig"), cp + ".humanConfig", rep)
+            else:
+                rep.warn("FLOW_HUMAN_CONFIG_MISSING", cp + ".humanConfig",
+                         "Human component has no humanConfig; the backend may backfill "
+                         "the bot-level configuration",
+                         "Set the intended component-level humanConfig explicitly; "
+                         "preserve an omitted sendHumanTipSwitch unless a value is requested")
 
 
 # --------------------------- L5 secrets / refs ---------------------------
@@ -1041,7 +1039,7 @@ def check_secrets_and_refs(cfg, rep):
     if cfg.get("apiSecrets"):
         rep.warn("SEC_API", "$.apiSecrets", "apiSecrets should not be present (it is cleared on import)")
     # numeric ranges
-    _range(cfg.get("creativityLevel"), 0.0, 0.95, "$.creativityLevel", rep, exclusive_high=True)
+    _range(cfg.get("creativityLevel"), 0.0, 1.0, "$.creativityLevel", rep)
     _range(cfg.get("docCorrelation"), 0.0, 1.0, "$.docCorrelation", rep)
     _range(cfg.get("embeddingRate"), 0.0, 1.0, "$.embeddingRate", rep)
 
@@ -1751,7 +1749,7 @@ def validate(cfg, raw_len):
         check_audio_config(cfg, rep)
     check_cross_type_blocks(cfg, bot_type, rep)
     check_secrets_and_refs(cfg, rep)
-    check_human_config(cfg, rep)
+    check_bot_fields(cfg, rep)
     return rep
 
 

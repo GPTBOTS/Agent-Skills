@@ -206,18 +206,15 @@ def gather_fields(fields):
 
 def var_cfgs(pairs, operation="Cover"):
     """Variable (assignment) component configs from (name, value) pairs.
-    Per-assignment shape is {variableName, operation, value}; `operation` is
+    Builder input shape is {variableName, operation, value}; `operation` is
     Cover / Clear / Append (capitalized).
 
-    ⚠️ A Variable node can only assign to a **User Attribute or Custom Variable
-    that already exists on the platform** — importing a .bot does NOT auto-create
-    them, so assignments to undefined targets are silently dropped (the node shows
-    "No variables available"). For the common "collect fields, then act" pattern,
-    you usually do NOT need a Variable node at all: route the ChatGather's
-    collect-complete edge straight to the next step (e.g. human handoff); the
-    collected fields + conversation context carry forward, and key events capture
-    the business type/status. Only use this helper when the target attributes are
-    pre-defined in the workspace."""
+    Targets must be defined in top-level customVariables/userProperties or already
+    exist on the target Agent. Importing definitions with the node can create its
+    targets; an assignment alone does not define a variable. Platform exports may
+    carry variableType and variableOperateType instead of operation: preserve
+    that representation when updating an exported file (see bot-config-fields.md).
+    """
     return [{"variableName": k, "operation": operation, "value": v}
             for (k, v) in pairs]
 
@@ -361,13 +358,8 @@ class FlowAgentBuilder:
                 "suffix='exception') to route classification errors to a fallback node "
                 "(this produces right{id}-branch_exception + name '_exception', as seen in "
                 "real exports). Or leave it unwired to let exceptionSwitch handle it internally.")
-        # A Variable node's success outlet is `variable_true` (edge name="_true"),
-        # NOT the bare `variable` handle — the platform's "assignment successful"
-        # port is keyed `variable_true`, so a plain `right{id}-variable` edge does
-        # not anchor to it and renders as a detached/floating line (and the port
-        # greys out), exactly like the Condition `_true` port. Treat the natural
-        # "success" call (suffix="" or "true") as the true outlet and auto-fill the
-        # handle+name. This mirrors the Condition handling below.
+        # Keep the builder's supported variable_true/_true form. STG may export
+        # the same success edge as variable/_true; the validator accepts both.
         if scomp["type"] == "Variable" and suffix in ("", "true"):
             suffix = "true"
             if not name:

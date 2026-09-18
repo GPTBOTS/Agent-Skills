@@ -1,6 +1,6 @@
 ---
 name: gptbots-agent-skill
-description: Create, read, update, and optimize GPTBots (https://www.gptbots.ai) Agent, FlowAgent, LoopAgent, Audio (voice) Agent, and Workflow configs (.bot / .flow), create Agents/Workflows/Tools/MCPs/Skills on the platform and look up model version IDs with account-level DevKey APIs, create/update org-level Skills and a LoopAgent's private Skills from a .skill/.zip package, import & publish/roll back versions of an existing target via its API Key, drive published Agents/Workflows via the Open API (evaluation, RAG testing, scheduled triggering, data & knowledge-base management), diagnose live conversations via message-level LogTree traces, create knowledge bases, and curate raw documents (PDF, Word, Excel, web, FAQ) into import-ready knowledge files. Use whenever the user mentions GPTBots or a .bot/.flow file, or wants to build/optimize/publish/roll back/evaluate a GPTBots Agent, FlowAgent, LoopAgent, Audio/voice Agent, or Workflow, create or update a Tool/MCP/Skill (org-level or Agent-private) or query platform model IDs, run ops diagnostics on a conversation, create or manage a knowledge base, or organize knowledge-base documents.
+description: Create, inspect, update, validate, publish, and operate GPTBots Agents, FlowAgents, LoopAgents, Audio Agents, and Workflows (.bot/.flow). Use for GPTBots configuration and prompt design, Tools/MCPs/Skills, model lookup, version release or rollback, Open API calls, evaluation and RAG testing, conversation LogTree diagnosis, knowledge-base management, and converting PDF, Word, Excel, web, or FAQ content into import-ready files. Trigger whenever the user mentions GPTBots, provides a .bot/.flow file, or asks to build, optimize, publish, test, diagnose, or manage GPTBots resources.
 license: MIT
 metadata:
   version: 2.1.0
@@ -23,7 +23,7 @@ A platform-level skill for working with **GPTBots** (https://www.gptbots.ai) Age
 
 Use this skill to:
 - **Read / update / optimize** an Agent or Workflow config from a **user-provided `.bot` or `.flow` file**.
-- **Create a new** Agent or Workflow from scratch (scenario + requirements → importable `.bot` / `.flow`).
+- **Create a new** QuestionAnswer, FlowAgent, Audio Agent or Workflow from scratch (scenario + requirements → importable `.bot` / `.flow`). LoopAgent updates require an existing platform export and preserve its `clawRule`.
 - **Create** a new Agent / Workflow / Tool / MCP / Skill on the platform, and **look up model version IDs**, with the account-level **DevKey/DevSecret** APIs — see `references/org-devkey-api.md`. Org-level Skills are created **and updated** from a `.skill`/`.zip` package (`/v1/org/skill/{create,update}`; an update goes live at once).
 - **Update, publish and roll back** an existing Agent/Workflow's version, and **create / update a LoopAgent's private Skills** (`/v1/agent/skill/{create,update}`), via that target's own API Key (needs **version-management permission**, granted in the console) — see `references/version-manage-api.md`.
 - **Drive** a published Agent/Workflow via the public Open API for evaluation, quality assessment, RAG testing, scheduled triggering, and data/knowledge-base management.
@@ -44,6 +44,7 @@ references/                   # how-to specs (read the one matching the task)
   org-devkey-api.md               # account DevKey APIs: orgs, model version IDs, Tool/MCP/Skill, create Agent/Workflow
   version-manage-api.md           # update / publish / roll back an existing target's version; LoopAgent private Skills (§7)
   organize-knowledge-base.md      # curate raw docs → import-ready Markdown / table / Q&A files
+  bot-config-fields.md            # human-service tips + variable/property .bot fields
   variables-reference.md / materials-mapping.md / workflow-nodes.md / flowagent-components.md
 scripts/
   validate_gptbots_config.py    # offline .bot/.flow quality check (mandatory self-check)
@@ -62,7 +63,9 @@ scripts/
 
 ## Generate via the builder scripts (one per target type)
 
-Don't hand-write config JSON. Write a small Python generation script that imports the builder matching the target type — `build_gptbots_agent.py` (QuestionAnswer), `build_gptbots_flowagent.py` (FlowAgent), `build_gptbots_loopagent.py` (LoopAgent), `build_gptbots_audioagent.py` (Audio), or `build_gptbots_workflow.py` (Workflow). The FlowAgent/Workflow builders auto-generate the strict edge handles (`right{id}-{key}[_suffix]` / `left{id}-{key}`, key matched to component type), unique component/edge/branch ids, and canvas layout — the three places hand-written JSON reliably goes wrong (the FlowAgent builder even rejects the classic mistake of repeating the key inside the suffix, which the offline validator can't catch but distorts canvas lines). Factor repeated node shapes into small functions (`answer_node()`, `gather_node()`, …), then `save()` (which runs the validator) → fix → rerun. The generation script is the source you iterate on; the `.bot`/`.flow` is its regenerable build artifact — when revising a config you generated earlier, edit the script and regenerate rather than patching the JSON. Run any builder with no arguments to print full usage, or `--demo <dir>` for a validated working example.
+Don't hand-write config JSON. For new QuestionAnswer, FlowAgent, Audio Agent and Workflow files, write a small Python generation script that imports the matching builder — `build_gptbots_agent.py` (QuestionAnswer), `build_gptbots_flowagent.py` (FlowAgent), `build_gptbots_audioagent.py` (Audio), or `build_gptbots_workflow.py` (Workflow). The FlowAgent/Workflow builders auto-generate the strict edge handles (`right{id}-{key}[_suffix]` / `left{id}-{key}`, key matched to component type), unique component/edge/branch ids, and canvas layout — the three places hand-written JSON reliably goes wrong (the FlowAgent builder even rejects the classic mistake of repeating the key inside the suffix, which the offline validator can't catch but distorts canvas lines). Factor repeated node shapes into small functions (`answer_node()`, `gather_node()`, …), then `save()` (which runs the validator) → fix → rerun. The generation script is the source you iterate on; the `.bot`/`.flow` is its regenerable build artifact — when revising a config you generated earlier, edit the script and regenerate rather than patching the JSON. Run these builders with no arguments to print full usage, or `--demo <dir>` for a validated working example.
+
+For LoopAgent, follow `references/create-gptbots-loopagent.md` to update documented shared fields in an existing export while preserving `clawRule`; do not use `loopagent_config()` or its demo to construct a new rule for delivery.
 
 Always keep the prompts **out of the build script**. The standard layout for every bot is a **`prompts/` folder with one `<key>.md` file per node** (the filename stem is the key) — this scales cleanly and avoids one giant unwieldy file even for large flows. Load it with `load_prompts("prompts/")` from `scripts/gptbots_prompts.py` (returns `{key: text}`).
 
@@ -70,20 +73,23 @@ Always keep the prompts **out of the build script**. The standard layout for eve
 
 ## Where the target config comes from
 
-This skill does not bundle any config. The target `.bot` / `.flow` is **provided by the user** (an attachment, a file path, or pasted JSON — exported from the GPTBots platform via Export). That file is the authoritative starting point for any optimization task. If the user wants to optimize an existing Agent/Workflow but has not provided the file, ask them to export it from the platform first (developer space → the Agent/Workflow → Export). For brand-new creation, no file is needed — start from the user's scenario and requirements.
+This skill does not bundle any config. The target `.bot` / `.flow` is **provided by the user** (an attachment, a file path, or pasted JSON — exported from the GPTBots platform via Export). That file is the authoritative starting point for any optimization task. If the user wants to optimize an existing Agent/Workflow but has not provided the file, ask them to export it from the platform first (developer space → the Agent/Workflow → Export). For brand-new QuestionAnswer, FlowAgent, Audio Agent or Workflow creation, start from the user's scenario and requirements. A LoopAgent task always requires a platform-exported `.bot`; preserve its `clawRule` and unrelated fields.
 
 ## Workflow
 
 ### A. Optimize / update a user-provided Agent or Workflow
 1. Read the user's `.bot` (or `.flow`) file to understand the current design. Identify its type from `botType` (`QuestionAnswer`/`Flow`/`LoopAgent`/`Audio`/`Workflow` — a legacy `Claw` means LoopAgent) and read the matching reference from the table above.
 2. Clarify what the user wants to change and gather their materials (FAQ/docs, data, examples). Do not invent requirements.
-3. Edit **only** the documented fields needed (see the matching `references/create-gptbots-*.md`). Keep model ids / plugin auth / cross-org references blank (the backend backfills or clears them on import) — **except a LoopAgent's `clawRule` model, which is never backfilled**: a blank one leaves the agent with no brain and wipes the target's, so carry the target's own id across or keep the builder's pinned default (see the LoopAgent reference §3).
-4. **Strip fields that don't belong to this `botType`.** An older file often carries residue from another type — most commonly plain-Agent model/sampling fields (`chatModelVersionId`, `creativityLevel`, `maxRespTokens`, `reasoning*`, `modelDynamicParams`, `databaseTableIds`) sitting on a LoopAgent, where nothing reads them and `chatModelVersionId` actively greys out attachment upload on share pages. The validator flags them (`CLAW_PLAIN_AGENT_FIELD` for plain-Agent fields on a LoopAgent; `XTYPE_*` for a whole block — `clawRule`, `flowRule`, `privateSkills`, the Audio voice keys — sitting on the wrong type); delete them rather than carrying them forward.
+3. Edit **only** the documented fields needed (see the matching `references/create-gptbots-*.md`). Keep model ids / plugin auth / cross-org references blank (the backend backfills or clears them on import) — **except a LoopAgent's `clawRule`**, which must be preserved in full, including its model ID. For a LoopAgent, change only the requested documented shared fields; do not replace its model with a builder default. If the exported rule is incomplete, obtain a corrected platform export.
+   - For service tips, localized human-service messages, custom variables/conversation properties, or user properties, also read `references/bot-config-fields.md`. Preserve an omitted `sendHumanTipSwitch` unless the user explicitly chooses a value, because its runtime default differs by handoff path.
+4. **Strip fields that don't belong to this `botType`.** An older file often carries residue from another type — most commonly plain-Agent model/sampling fields (`chatModelVersionId`, `creativityLevel`, `maxRespTokens`, `reasoning*`, `modelDynamicParams`, `databaseTableIds`) sitting on a LoopAgent, where nothing reads them and `chatModelVersionId` actively greys out attachment upload on share pages. The validator flags them (`CLAW_PLAIN_AGENT_FIELD` for plain-Agent fields on a LoopAgent; `XTYPE_*` for a whole block — `clawRule`, `flowRule`, `privateSkills`, the Audio voice keys — sitting on the wrong type). For a LoopAgent shared-field update, report unrelated validation problems and obtain a corrected export rather than silently deleting unrelated configuration or rebuilding its rule. For the other types, remove cross-type residue before delivery.
 5. For a **Workflow / FlowAgent**, generate an `overview.md` next to the output file containing a `## Flow (mermaid)` diagram of the new design, so the design intent stays reviewable.
 6. Run the quality check, then deliver (sections below).
 
 ### B. Create a new Agent or Workflow
 Pick the type from the table at the top, read **only that type's reference**, then quality-check and deliver. For a LoopAgent also read `references/loopagent-runtime.md` — its capabilities are silently gated, so a config that looks complete can still do nothing.
+
+Do not synthesize a new LoopAgent `clawRule`. A LoopAgent task requires an existing platform-exported `.bot`; preserve `clawRule` and edit only documented shared fields.
 
 ### C. Drive a published Agent/Workflow via the API
 For evaluation / quality assessment / RAG testing / scheduled triggering / data & knowledge-base management (including **creating a knowledge base** via `POST /v1/bot/knowledge/base/create`), follow `references/call-gptbots-api.md` (public Open API only).
@@ -137,6 +143,7 @@ Several nodes carry an LLM prompt: the top-level identity `prompt` of a Question
 - **One node, one job.** Scope each prompt to that node's single responsibility; don't restate global rules in every node — put shared identity/boundaries once in the identity prompt.
 - **Classifier branch rules are prompts too.** Each `Branch` category rule and `INTENT` intent description deserves the same care as a system prompt: the rules must be **mutually exclusive and unambiguous**, written as concrete descriptions of what belongs in that category (add examples for easily-confused intents), with everything else falling to the `Other`/fallback branch. Routing accuracy — and therefore the whole flow's quality — is capped by the weakest branch rule. Classification must consider conversation context, not just the last message: enable short-term memory and instruct the rules to route fragmentary or emotion-only follow-ups about an unresolved issue to that issue's branch, not the fallback; for cross-session continuity, LLM-driven components also support key events (see the FlowAgent reference).
 - **No conflicts.** Before delivery, re-read all prompts in the config **as a set** (identity prompt + every LLM/classifier/condition prompt) and resolve any contradiction in goals, tone, boundaries, or output format. Conflicting prompts make the model behave inconsistently at runtime, which no amount of flow design can fix.
+- **Confirm side effects honestly.** Never let a prompt claim that data was saved, updated, sent, or deleted from intent or transport-level success alone. Require the tool/API result to identify the operation as successful and absent from its failed items; use read-after-write verification when persistence matters. For a user property with `chatUpdate=false`, the Agent must state that it cannot update the property in chat rather than claim it was saved.
 
 ## Import-fatal schema invariants (the builders enforce these; the validator catches them)
 
@@ -153,7 +160,7 @@ Audio (`multiModal`) invariants live in their own references** (§3 and §4 resp
 - **Variable assignments** are `{variableName, operation, value}` with `operation` ∈ `Cover`/`Clear`/`Append` (capitalized). (`COMP_ENUM_VARIABLE_OPERATION`)
 
 ## Quality check (mandatory — never deliver a config that fails)
-After producing or editing any `.bot`/`.flow`, run:
+The validator requires Python 3.11 or newer. Check `python3 --version`; if it is older, use an available `python3.11`/`python3.12` interpreter. After producing or editing any `.bot`/`.flow`, run:
 ```
 python3 scripts/validate_gptbots_config.py <path/to/output>.bot
 ```

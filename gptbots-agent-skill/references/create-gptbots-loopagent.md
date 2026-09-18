@@ -1,7 +1,8 @@
-# Create / optimize a GPTBots LoopAgent (.bot)
+# Inspect / update an exported GPTBots LoopAgent (.bot)
 
-> Reference for the `GPTBots Skill` workflow when the target is a **LoopAgent** (`botType=LoopAgent`, formerly `Claw`). Turn "scenario + requirements" (or a user-provided `.bot`) into an importable `.bot` with `exportType=BOT`.
-> Runtime behaviour, gating rules and error codes live in `./loopagent-runtime.md` — read it before you design the config, because most LoopAgent capabilities are **silently gated** rather than validated.
+> Reference for an existing platform-exported **LoopAgent** (`botType=LoopAgent`, formerly `Claw`). This skill preserves `clawRule` and unrelated fields, and edits only requested, documented shared fields such as `humanConfig`, `customVariables` and `userProperties`. See `./bot-config-fields.md`.
+> Do not synthesize a new `clawRule`, call `loopagent_config()` to replace it, or substitute a builder's default model. Without an existing export, ask the user to create/configure the LoopAgent in the platform and export it first.
+> Sections 1–6 explain the existing schema and runtime for inspection; they do not authorize rewriting the rule during a shared-field update. Runtime behaviour, gating rules and error codes live in `./loopagent-runtime.md`.
 
 ## 1. What a LoopAgent is (and how that changes the config)
 
@@ -13,10 +14,10 @@
 
 You are **not drawing a flow**. You are giving the agent: an **identity** (persona) + a **set of capabilities** (knowledge / tools / tables / skills / handoff / sub-agent) + **guardrails** (loop limits). The model then decides, on every message, which of those to use and how many times.
 
-Consequences for config authoring:
+Consequences for inspecting an export:
 - There are no nodes, edges, branches or handles to design. The topology is **fixed**: 1 `ClawCenter` + 7 satellites, always the same ids.
 - Almost all of the leverage sits in **one field** — the center's `persona` prompt — plus **which capabilities you switch on**.
-- A capability that is "configured" but missing its resource (no knowledge base bound, no table picked, no webhook) produces a registered-but-broken tool. Prefer switching a satellite **off** over leaving it on and empty.
+- A capability missing its resource (no knowledge base bound, no table picked, no webhook) may be unavailable or fail at runtime. Report that condition; do not toggle unrelated satellites in the exported rule.
 
 ## 2. File shape
 
@@ -39,7 +40,7 @@ Consequences for config authoring:
     "multiModalInput": {                 // imports fine and then 500s/50000s at runtime
       "fileLimit": 1, "messageMode": "QUEUE"  /* + the rest of the known-good block */
     }
-  },                                     // emit it with the builder; do not hand-write the enums
+  },                                     // preserve the exported block and enum values
   "shortTermMemory": true, "shortTermMemoryRound": 30,
   "longTermMemory": false, "memoryEnable": true,   // both meaningless for LoopAgent — keep the defaults
   "toolsEnable": true, "workflowEnable": false,
@@ -50,7 +51,7 @@ Consequences for config authoring:
 ```
 
 `clawRule` is a `ClawFlow`: `{thumbnail, components[], comments[]}`. Each component is
-`{type, id, name?, title?, x?, y?, content{}, nextComponents?[]}` — **`id` and `nextComponentId` are STRINGS here**, unlike FlowAgent where they are strict integers. `x`/`y` are not persisted (radial layout), leave them out.
+`{type, id, name?, title?, x?, y?, content{}, nextComponents?[]}` — **`id` and `nextComponentId` are STRINGS here**, unlike FlowAgent where they are strict integers. The platform uses a radial layout; preserve the exported representation, including any optional fields.
 
 ### The fixed topology (ids are contractual — do not rename)
 
@@ -67,7 +68,7 @@ Consequences for config authoring:
 
 Only the center carries `nextComponents` — seven edges, `id = "center->{satelliteId}"`, `nextComponentId = satelliteId`, `sort = 0…6` (integers, in the order above). Satellites must **omit** `nextComponents` entirely (the platform serializer drops empty lists; an empty `[]` is tolerated but off-contract).
 
-## 3. Import-fatal invariants (the builder enforces these; the validator catches them)
+## 3. Import invariants (inspect; do not reconstruct the rule)
 
 - **`ClawCenter` is mandatory.** The engine's `fromBotFlow` throws `center node required` → runtime `40001 botRule invalid`. On import a rule without a center is silently replaced by the platform default topology, so your whole config is lost without an error. (`CLAW_CENTER_MISSING`)
 - **Loop Control ranges are enforced on import**, not just in the UI — `ClawLoopControlValidator` runs on the import path and rejects the file with `PARAMETER_ERROR (40000)`: `maxTurns ∈ [1,100]`, `maxErrors ∈ [0,50]`, `maxBudgetInputTokens ≥ 0`, all **integers** (a float or a numeric string fails). (`CLAW_LOOP_RANGE`)
@@ -75,37 +76,33 @@ Only the center carries `nextComponents` — seven edges, `id = "center->{satell
 - **`center.content.llm.baseUrl` must be `null` or a public `http(s)` URL.** Internal / loopback / link-local / cloud-metadata addresses are rejected as SSRF, and a non-http scheme is rejected too. Normally leave it `null`. (`CLAW_BASEURL_SSRF`)
 - **`center.content.llm.model` is an AMH-gateway `model_version_id`** (24-hex opaque), *not* a readable model name — writing `"claude-sonnet-4-6"` produces a bot that cannot call the gateway, and LoopAgent does **not** support BYOK models. (`CLAW_MODEL_NAME_AS_ID`, warning)
 - **A blank model is not backfilled — it is the one value you can never ship.** `fixLoopAgentCenterModel` returns *early* when the id is blank (it only re-checks and replaces a **stale** id against the gateway catalogue), so an empty `llm.model` survives the import intact: the agent then fails the first frame with `50101 No LLM credentials`, and when you import into an **existing** LoopAgent it silently **wipes the model that target already had**. (`CLAW_MODEL_EMPTY`, error)
-- **Look the model id up with `agent_type=LOOP_AGENT` — and only that.** LoopAgent models are served by the **AMH LLM gateway**, and `GET /v1/model/list?org_id=…&agent_type=LOOP_AGENT` (account-level DevKey auth) is the one listing that returns gateway ids. An id taken from an unfiltered listing, or from another `agent_type`, is not reachable by the gateway and the agent answers `50101`. LoopAgent does not support BYOK models. In order of preference:
-  - **Updating an existing LoopAgent** → carry its own `clawRule` → `center.content.llm.model` across from its export (`model=` on the builder), so the import does not switch the agent's brain out from under the user.
-  - **New agent** → `python3 ../scripts/gptbots_org_api.py models --org <org_id> --agent-type LOOP_AGENT`, pick a `modelId`, pass it as `model=`. Confirm the choice with the user — it is the agent's brain and its per-message cost.
-  - **No credentials to query with** → fall back to the builder's pinned default `0ec52e3e7dfc000f9470eb15` (**GPT-5.6-Luna**) and say so at delivery. See `./org-devkey-api.md` §3.
-- **No plain-Agent top-level fields.** `chatModelVersionId`, `modelDynamicParams`, `creativityLevel`, `maxRespTokens`, `reasoningEffort`, `reasoningEnabled`, `showReasoning` and `databaseTableIds` belong to the QuestionAnswer schema; a backend LoopAgent export carries none of them. They are dead config that contradicts the `clawRule` the engine actually reads — and `chatModelVersionId` is worse than dead: the Agent detail API derived `supportImageRecognition` from it, so writing it (even as `""`) greys out attachment upload on share pages and the widget. **When optimizing a user-provided `.bot`, delete any of these you find** — older generators wrote them. (`CLAW_PLAIN_AGENT_FIELD` — error for `chatModelVersionId`, warning for the rest)
-- **Environment-bound ids are cleared or filtered on import.** `Dataset.docGroupIds` and `ClawDB.tableIds` are emptied when importing as a new Agent; `ToolApi.pluginIds` is filtered to plugins that exist and belong to the target org; `skillRefs` pointing at skills that cannot be resolved are dropped. Ship them **empty** and tell the user to bind resources after import. (`CLAW_ENV_REFS`, warning)
+- **Model lookup uses `agent_type=LOOP_AGENT`.** LoopAgent models are served by the **AMH LLM gateway**, and `GET /v1/model/list?org_id=…&agent_type=LOOP_AGENT` (account-level DevKey auth) returns gateway ids. An id from another agent type can be unreachable by that gateway. LoopAgent does not support BYOK models. For this update workflow:
+  - **Shared-field update** → preserve the complete exported `clawRule`, including `center.content.llm.model`. No builder call or model fallback is needed.
+  - **Missing/blank model or invalid rule** → report the validation failure and obtain a corrected platform export. Do not invent a replacement rule or model ID. Model lookup details are in `./org-devkey-api.md` §3.
+- **No plain-Agent top-level fields.** `chatModelVersionId`, `modelDynamicParams`, `creativityLevel`, `maxRespTokens`, `reasoningEffort`, `reasoningEnabled`, `showReasoning` and `databaseTableIds` belong to the QuestionAnswer schema. The validator reports `CLAW_PLAIN_AGENT_FIELD` for these. If an existing file contains unrelated invalid fields, report them and obtain a corrected export rather than silently deleting them during a shared-field update.
+- **Environment-bound ids are cleared or filtered on import.** `Dataset.docGroupIds` and `ClawDB.tableIds` are emptied when importing as a new Agent; `ToolApi.pluginIds` is filtered to plugins that exist and belong to the target org; unresolved `skillRefs` are dropped. Preserve these fields in the source rule and tell the user which bindings need checking after import. (`CLAW_ENV_REFS`, warning)
 - **`prompt` (top level) must be empty.** The identity that actually runs is `clawRule` → `center.content.prompts.persona`. A top-level prompt on a LoopAgent is dead text that misleads whoever reads the file next. (`CLAW_TOP_LEVEL_PROMPT`, warning)
 - **Empty prompt string means "use the engine default".** `null` / `""` / whitespace → the engine falls back to its built-in text. Never paste an engine default back into the field: it freezes today's wording into the bot and blocks future platform improvements.
 - **`multiModal.multiModalInput` must be present** (shared auto-save NPE guard). For LoopAgent also set `messageMode` — `QUEUE` (default: queued messages merge into one reply at the turn boundary) or `APPEND` (steering: queued text is absorbed at the next round). (`L0_MULTIMODAL_AUTOSAVE_NPE`, `CLAW_MESSAGE_MODE`)
 - **`clawToolTraceRecentRounds ∈ [0,5]`**, default `1`. It is counted in *user rounds*, independent of `shortTermMemoryRound`. `0` = older rounds keep only the plain Q/A text (the model can no longer see which tool it called or with what arguments). (`CLAW_TOOL_TRACE_ROUNDS`)
 
-## 4. The persona prompt (where almost all the quality lives)
+## 4. The persona prompt (inspection only in this workflow)
 
-`center.content.prompts.persona` is the **only** editable prompt on a LoopAgent. The sibling keys `style` and `routing` still exist on the wire, but their console entry points were removed — treat them as platform-managed and always leave them empty. Everything else (loop discipline, tool guidance, key-event policy, runtime env) is engine text you cannot override either.
+`center.content.prompts.persona` is the prompt exposed by the LoopAgent editor. Sibling keys `style` and `routing` can still exist on the wire without console entry points. Preserve all three as part of the original `clawRule` during a shared-field update. A request to change the persona or other rule content requires a platform edit and a fresh export for this workflow.
 
-Everything you want the agent to be and to do goes in **`persona`**, the identity prompt shown in the platform's full-screen editor:
+When inspecting a persona in the platform's full-screen editor, identify:
 
 - **Identity** — who the agent is, what product and market it serves, language policy.
 - **Boundaries** — what it must never do, what needs identity verification, where it must escalate.
-- **How to handle each kind of message** — when to search knowledge, query a data table, open a key event, hand off to a human. Write it as guidance, not as a dispatcher that must emit JSON.
+- **How to handle each kind of message** — when to search knowledge, query a data table, open a key event or hand off to a human.
 - **Reply style** — length, tone, formatting, phrasing conventions.
 
-Give it headed sections (`# Role`, `# Boundaries`, `# How to handle a message`, `# Reply style`) so a long persona stays navigable for whoever edits it next.
-
-Writing rules (in addition to *Prompt quality for LLM-capable nodes* in SKILL.md):
-- **Persona is shared with sub-agents.** Anything you write as "you are the customer's first contact" also lands inside a background sub-agent. Write role/boundaries/language, not turn-taking choreography.
-- **Never reference per-turn-changing variables in `persona`.** It is the first segment of the model's stable cache prefix; a value that changes every turn (online duration, message count, timestamps) invalidates the prefix cache on every message → slower and materially more expensive.
+Runtime considerations when reading the existing persona:
+- **Persona is shared with sub-agents.** Instructions addressed to the customer's first contact also reach background sub-agents, which matters when diagnosing their behaviour.
+- **Per-turn-changing variables affect the persona cache.** The persona is the first segment of the model's stable cache prefix; changing timestamps or counters can invalidate that prefix on each message.
 - **Leaving `persona` empty is legal**, and the engine ships no built-in persona — an empty persona simply injects no identity section. It is not a validation error.
-- **Tell the agent when to read deeply.** The `read_source_document` tool (full / grep read of a retrieved document) is under-triggered by default; a sentence in `persona` about reading the whole document when recall is thin measurably improves answers.
-- Keep the prompt in a `prompts/` folder (`persona.md`) and load it with `load_prompts("prompts/")`, exactly like every other bot type in this skill. This matters more than convenience: the platform keeps **no persona-level version history** (the editor's history is the Agent's version list, diff-only, no restore — `loopagent-runtime.md` §3), so the generation script plus the `.bot` versions you import are the only revision trail of the prompt.
-- **Do not write into `style` or `routing`.** The wire still carries those keys and the engine still reads them, but the console removed their entry points, so any text there shapes behaviour no operator can review, edit or reset. The builder always emits them empty and the validator warns (`CLAW_PROMPT_NO_UI`) when it finds content. Everything they used to hold belongs in `persona`.
+- Keep the original export and a separate updated file as a revision trail. Validate that `clawRule`, including all prompt fields, is unchanged before delivery.
+- The validator warns (`CLAW_PROMPT_NO_UI`) if `style` or `routing` contains text. Report the warning without clearing these unrelated fields.
 
 ## 5. Wiring capabilities (satellite by satellite)
 
@@ -120,7 +117,7 @@ Writing rules (in addition to *Prompt quality for LLM-capable nodes* in SKILL.md
 | Key events | bot-level key-event config (recorder switch + type catalogue) | **Double gate**: the switch must be on *and* at least one event type must exist, otherwise none of `create/update/query_key_event` is registered. The satellite's `keyEventTypes` is no longer read. Only `enabled`, the type catalogue and `defaultSeverity` change behaviour. |
 | Sub-agent | `ClawSubAgent` satellite: `{enabled, parallelCount 1–5, triggerPrompt}` | Ships **off** by default. `parallelCount` is a per-turn spawn cap, **not** real concurrency (execution is serial). `maxWaitMinutes` is a dead field. |
 
-**Model capability gate:** if the selected brain model does not declare tool-calling support, Tools / Workflow / Database / Human are all disabled in the UI. Nothing in the file can work around that — pick a tool-capable model.
+**Model capability gate:** if the selected brain model does not declare tool-calling support, Tools / Workflow / Database / Human are all disabled in the UI. Report that limitation; a shared-field update does not replace the model.
 
 **Fields that look configurable but do nothing** (do not spend effort on them, and do not promise them to the user): `ClawKeyEvent.titleStrategy`, `.autoCreateOnSpawn`, `.autoResolveIdleDays`, `.slaHighMs`, `.slaNormalMs`, `.keyEventTypes`, `.triggerPrompt`; `ClawSubAgent.maxWaitMinutes`; `center.llm.fallbackModel` is persisted for UI parity and consumed only as a degradation fallback, never as load balancing.
 
@@ -130,54 +127,42 @@ Writing rules (in addition to *Prompt quality for LLM-capable nodes* in SKILL.md
 - Organization / platform skills are **not** embedded — only their id survives in `skillRefs`, and the import drops refs the target org cannot see.
 - Limits enforced by the import scanner: ≤50 private skills, ≤5 MB per file, ≤5 M characters of `SKILL.md`, name ≤500 chars, ≤20 description locales.
 - A skill with a blank `skillMdContent` is silently dropped at runtime (`blank SKILL.md content — dropped`). Skill names are case-sensitive and de-duplicated first-wins.
-- Unless the user explicitly asked to transfer skills, ship `privateSkills: []` and `skillRefs: []`.
+- Preserve `privateSkills` and `skillRefs` during shared-field updates. Do not clear existing skills or add new ones as a side effect.
 - **Preferred way to give an existing LoopAgent a private skill: the API, not `privateSkills[]`.** `POST /v1/agent/skill/create` (that Agent's API Key with version-management permission, `../scripts/gptbots_agent_skill.py create <pkg>`) stores the skill once and returns a stable `skill_id`; reference it in `skillRefs[]` as `{skillId, enabled: true, source: "ORGANIZATION"}` and import the `.bot` as a new version. Later content changes go through `POST /v1/agent/skill/update --skill-id …` and reach the mounted skill without another Agent version — no duplicate copies. See `version-manage-api.md` §7.
 - **Re-importing the same file creates another copy of each embedded skill.** Import-as-version appends a version snapshot when the source `skillId` already belongs to the target, and otherwise creates a *new* private skill. A generated `.bot` carries a synthetic `skillId` that never belongs to the target, so every re-import adds one more private skill (runtime de-duplicates by name, first-wins, so the agent still behaves — it is clutter, not breakage). When you iterate on a `.bot`, tell the user to delete the stale copies in the console, or take the `skillId` the target actually assigned from an export and reuse it so later imports append versions instead.
 
-## 7. Generate with the builder
+## 7. Update shared fields in an existing export
 
-Do not hand-write the JSON. Use `../scripts/build_gptbots_loopagent.py`:
+Start with the actual exported file and write to a separate output. For example, if the user explicitly asks to disable handoff tips:
 
-```python
-from build_gptbots_loopagent import loopagent_config, save
-from gptbots_prompts import load_prompt_store
+```bash
+jq 'if .botType == "LoopAgent" and (.clawRule | type) == "object"
+    then .humanConfig.sendHumanTipSwitch = false
+    else error("An existing platform-exported LoopAgent is required")
+    end' existing-loopagent.bot > loopagent-updated.bot
 
-P = load_prompt_store("prompts/")            # persona.md
-cfg = loopagent_config(
-    "Support LoopAgent",
-    persona=P.require("persona"),
-    # model=… omitted → DEFAULT_CLAW_MODEL (0ec52e3e7dfc000f9470eb15, GPT-5.6-Luna).
-    # Prefer a real id: gptbots_org_api.py models --org <org_id> --agent-type LOOP_AGENT
-    # Updating an existing LoopAgent? pass model="<id from that agent's export>".
-    max_turns=25, max_errors=5, max_budget_input_tokens=0,
-    knowledge=True,                # keep the Dataset satellite on (ids bound after import)
-    database=False, tools=True, subagent=False,
-    handoff=True, key_event=True,
-    message_mode="QUEUE", tool_trace_recent_rounds=1,
-)
-save(cfg, "support-loopagent.bot")           # writes the file and runs the validator
+cmp <(jq -S '.clawRule' existing-loopagent.bot) \
+    <(jq -S '.clawRule' loopagent-updated.bot)
 ```
 
-The builder refuses the plain-Agent fields listed in §3 (`PLAIN_AGENT_ONLY_FIELDS`) — passing `chatModelVersionId=` or `reasoningEffort=` through `**kwargs` raises instead of silently landing on the config — and never emits a blank `llm.model`. (Both guards live in `loopagent_config()` / `claw_center()`; a hand-built `rule=` bypasses them, so validate anything you assemble by hand.)
-
-Run the builder with no arguments to print full usage, or `--demo <dir>` for a validated working example.
+The comparison must succeed. Inspect the complete diff to confirm only the requested shared fields changed, then run the validator. Preserve an omitted `sendHumanTipSwitch` unless the user requested a value; a missing switch has different defaults on different handoff paths. Do not invoke the legacy LoopAgent builder or `--demo` to fill in a missing rule or model.
 
 ## 8. Quality check (mandatory)
 
 ```
 python3 ../scripts/validate_gptbots_config.py <name>.bot
 ```
-Exit code must be 0 before delivery. Fix per the reported `path` / `fix` and rerun.
+Exit code must be 0 before delivery. Fix reported fields within the requested scope and rerun; for unrelated rule failures, obtain a corrected platform export without rebuilding `clawRule`.
 
 ## 9. Delivery
 
-Place the `.bot` (and its `prompts/` folder and generation script) in the working directory and return the paths. Then tell the user:
+Place the updated `.bot` beside the original export and return its path and the shared-field diff. Then tell the user:
 - **Manual:** developer space → **Create Agent → Import** → select the file.
 - **API (existing target):** `python3 ../scripts/publish_gptbots.py <file> --api-key <key>` — the key must be an API Key with **version-management permission**, created manually in the console (add `--release` only if they explicitly want to go live). See `./version-manage-api.md`.
 - **API (brand-new Agent):** `python3 ../scripts/gptbots_org_api.py import-agent <file> --org <org_id>` with the account's DevKey/DevSecret — see `./org-devkey-api.md`.
 - **Always say this:** importing/saving only updates the **Debug** version. Until the user clicks **Publish / Release**, every production channel (Open API, share page, widget, LiveChat, Telegram, LiveDesk…) keeps running the previous snapshot — and a LoopAgent that has never been published fails on those channels with `AGENT_WORKFLOW_PUBLISHED_NOT_EXIST`.
 - Remind them to bind the environment-specific resources the import cleared: knowledge bases, data tables and plugins.
-- **Name the brain model the file ships with**, and where the id came from (queried with `--agent-type LOOP_AGENT`, carried over from the target's export, or the pinned fallback `0ec52e3e7dfc000f9470eb15` / **GPT-5.6-Luna**) — so the user can switch it in the console (target Settings → Agent Brain → Model) if they want a different one. If you were updating an existing LoopAgent and carried its own id across, say so too. A blank `llm.model` must never reach the user: the agent would have no brain model at all and every message would return `50101` — the single most common way a correctly-imported LoopAgent is dead on arrival.
+- State that the exported brain model and complete `clawRule` were preserved. If validation finds an invalid or blank model, do not deliver a supposedly working replacement; request a corrected platform export.
 
 ## References
 - Runtime semantics, gating checklists, error codes: `./loopagent-runtime.md`

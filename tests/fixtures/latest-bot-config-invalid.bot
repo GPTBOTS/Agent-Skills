@@ -1,0 +1,30 @@
+{
+  "formatVersion": "1.0",
+  "exportType": "BOT",
+  "name": "Invalid latest bot config fixture",
+  "botType": "QuestionAnswer",
+  "humanConfig": {
+    "sendHumanTipSwitch": "true",
+    "multiLanguages": {
+      "en": [
+        {
+          "code": "84",
+          "text": "Transfer failed."
+        }
+      ]
+    }
+  },
+  "customVariables": [
+    {
+      "name": "var_shared",
+      "type": "UNKNOWN"
+    }
+  ],
+  "userProperties": [
+    {
+      "name": "var_shared",
+      "type": "string",
+      "accountId": "must-not-be-exported"
+    }
+  ]
+}
